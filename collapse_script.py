@@ -11,11 +11,11 @@ from alpha_calculation_functions import read_directory, read_csv_at_time
 
 
 
-directory="/Users/mika/Documents/PDM_2/outputs"
-
+directory="C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\new_run_grid\\run_L_1000"
 wt_avg_collection=[]
 l_avg_collection=[]
 urban_avg_collection=[]
+time_avg_collection=[]
 
 # time at which we do the alpha calculation 
 # time=-1
@@ -23,9 +23,9 @@ urban_avg_collection=[]
 wt_collection=[]
 l_collection=[]
 urban_collection=[]
+time_scalar_collection=[]
 
-
-time_serie= np.linspace(0.1,0.3,3)
+time_serie= np.linspace(0.3,0.99,100)
 
 for time in time_serie:
     print("wesh")
@@ -34,15 +34,17 @@ for time in time_serie:
 
         if filename.endswith(".csv"):
             filepath = os.path.join(directory, filename)
-            l,wt,urban_fraction=read_csv_at_time(filepath,time)
+            l,wt,urban_fraction,time_scalar=read_csv_at_time(filepath,time)
 
             wt_collection.append(wt)
             l_collection.append(l)
             urban_collection.append(urban_fraction)
+            time_scalar_collection.append(time_scalar)
 
     l_avg,l_std=tolerant_mean(l_collection)
     wt_avg,w_std=tolerant_mean(wt_collection)
     urban_avg=np.mean(urban_collection)
+    time_avg=np.mean(time_scalar_collection)
 
 
 
@@ -56,6 +58,7 @@ for time in time_serie:
     l_avg_collection= add_array_with_padding(l_avg_collection,  l_avg)
    
     urban_avg_collection.append(np.mean(urban_avg))
+    time_avg_collection.append(time_avg)
 
 
 
@@ -84,6 +87,10 @@ plt.grid()
 plt.show()
 
 
+plt.loglog(time_avg_collection, urban_avg_collection, 'o')
+plt.show()
+
+print(np.polyfit(np.log10(time_avg_collection), np.log10(urban_avg_collection), 1))
 
 
 
@@ -94,7 +101,7 @@ plt.show()
 
 beta_vals = np.linspace(0.0, 1, 50)   # adjust
 inv_z_vals = np.linspace(0, 1, 50)
-E = grid_error_map(l_avg_collection, wt_avg_collection, urban_avg_collection, beta_vals, inv_z_vals, n_interp=200)
+E = grid_error_map(l_avg_collection, wt_avg_collection, time_avg_collection, beta_vals, inv_z_vals, n_interp=200)
 
 # find min
 min_idx = np.unravel_index(np.nanargmin(E), E.shape)
@@ -109,7 +116,7 @@ plt.scatter([inv_z_vals[min_idx[1]]], [beta_vals[min_idx[0]]], color='red')
 plt.gca().invert_yaxis()  # optional
 plt.show()
 
-res = minimize_collapse_normalized(l_avg_collection, wt_avg_collection, urban_avg_collection,
+res = minimize_collapse_normalized(l_avg_collection, wt_avg_collection, time_avg_collection,
                                    beta_guess=beta_vals[min_idx[0]], inv_z_guess=beta_vals[min_idx[1]],
                                    bounds=((0.0,2),(0.01,2)),
                                    n_interp=200)

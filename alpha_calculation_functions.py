@@ -52,7 +52,8 @@ def read_csv_at_time(filename, given_time, col_time="timestep",col_l="l", col_w=
         filtered = filtered.sort_values(col_l)
         l_array = filtered[col_l].values
         w_array = filtered[col_w].values
-        urban_fraction_scalar = filtered[col_urban].values[0]  # Same for all rows
+        urban_fraction_scalar = filtered[col_urban].values[0]
+        time= filtered[col_time].values[0]  # Same for all rows
     else:
         print(f"No rows for time {given_time} in {filename}.")
         N_array = np.array([])
@@ -60,7 +61,7 @@ def read_csv_at_time(filename, given_time, col_time="timestep",col_l="l", col_w=
         radius_array = np.array([])
         urban_fraction_scalar = 0.0
 
-    return l_array, w_array, urban_fraction_scalar
+    return l_array, w_array, urban_fraction_scalar,time
 
 
 

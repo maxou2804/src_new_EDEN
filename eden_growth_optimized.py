@@ -314,7 +314,7 @@ def simulate_optimized(grid_size,
         total_points = len(r)
         if N_list_cache is None or total_points > prev_len * 1.1:
             min_N = 5
-            max_N = total_points // 5
+            max_N = total_points // 2
             if max_N >= min_N:
                 num_N_actual = min(num_N, max_N - min_N + 1)
                 N_list_cache = np.logspace(

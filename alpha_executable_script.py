@@ -16,13 +16,13 @@ wt_collection=[]
 l_collection=[]
 
 # directory="/Users/mika/Documents/PDM/outputs/13_10_25"
-directory="/Users/mika/Documents/PDM_2/outputs"
+directory="C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\new_run_grid\\run_L_1000"
 #time at which we do the alpha calculation (give 0 to 1)
 time_extract=0.5
 
 #give points to skip for the fit
 beg_points_to_skip=0
-end_points_to_skip=25
+end_points_to_skip=28
 
 #extract values from cvs
 
@@ -31,7 +31,7 @@ for filename in os.listdir(directory):
     if filename.endswith(".csv"):
         filepath = os.path.join(directory, filename)
         #print(filename)
-        l, wt,urban_fraction=read_csv_at_time(filepath,time_extract)
+        l, wt,urban_fraction,time=read_csv_at_time(filepath,time_extract)
 
         l_collection.append(l)
         wt_collection.append(wt)
