@@ -16,13 +16,13 @@ wt_collection=[]
 l_collection=[]
 
 # directory="/Users/mika/Documents/PDM/outputs/13_10_25"
-directory="C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\new_run_grid\\run_L_1000"
+directory = "C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed_gravitational"
 #time at which we do the alpha calculation (give 0 to 1)
-time_extract=0.5
+time_extract=0.4
 
 #give points to skip for the fit
 beg_points_to_skip=0
-end_points_to_skip=28
+end_points_to_skip=15
 
 #extract values from cvs
 
@@ -31,7 +31,7 @@ for filename in os.listdir(directory):
     if filename.endswith(".csv"):
         filepath = os.path.join(directory, filename)
         #print(filename)
-        l, wt,urban_fraction,time=read_csv_at_time(filepath,time_extract)
+        l, wt,time=read_csv_at_time(filepath,time_extract)
 
         l_collection.append(l)
         wt_collection.append(wt)
@@ -54,7 +54,7 @@ l_avg,l_std=tolerant_mean(l_collection)
 
 
 
-result = progressive_loglog_fit(l_avg, wt_avg,beg_points_to_skip,end_points_to_skip, std_threshold=0.01)
+result = progressive_loglog_fit(l_avg, wt_avg,beg_points_to_skip,end_points_to_skip, std_threshold=50)
 
 
 print(f"Slope = {result['slope']:.3f} ± {result['slope_std']:.3f}")
@@ -68,6 +68,8 @@ plt.loglog(l_avg, wt_avg, 'o', label=f"data t={time_extract}")
 plt.loglog(l_avg, wt_avg+wt_std)
 plt.loglog(l_avg, wt_avg-wt_std)
 plt.loglog(l_avg[beg_points_to_skip:-end_points_to_skip],l_avg[beg_points_to_skip:-end_points_to_skip]**result["slope"]*10**result["intercept"], '-', label=f"slope : {result['slope']:.3f}")
+
+
 plt.xlabel("l")
 plt.ylabel("w")
 plt.legend()

@@ -11,7 +11,7 @@ from alpha_calculation_functions import read_directory, read_csv_at_time
 
 
 
-directory="C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\new_run_grid\\run_L_1000"
+directory="C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed"
 wt_avg_collection=[]
 l_avg_collection=[]
 urban_avg_collection=[]
@@ -25,7 +25,7 @@ l_collection=[]
 urban_collection=[]
 time_scalar_collection=[]
 
-time_serie= np.linspace(0.3,0.99,100)
+time_serie= np.linspace(0.1,0.45,10)
 
 for time in time_serie:
     print("wesh")
@@ -34,30 +34,28 @@ for time in time_serie:
 
         if filename.endswith(".csv"):
             filepath = os.path.join(directory, filename)
-            l,wt,urban_fraction,time_scalar=read_csv_at_time(filepath,time)
+            l,wt,time_scalar=read_csv_at_time(filepath,time)
 
             wt_collection.append(wt)
             l_collection.append(l)
-            urban_collection.append(urban_fraction)
             time_scalar_collection.append(time_scalar)
 
     l_avg,l_std=tolerant_mean(l_collection)
     wt_avg,w_std=tolerant_mean(wt_collection)
-    urban_avg=np.mean(urban_collection)
     time_avg=np.mean(time_scalar_collection)
 
 
 
     wt_collection=[]
     l_collection=[]
-    urban_collection=[]
+
   
     
 
     wt_avg_collection=add_array_with_padding(wt_avg_collection, wt_avg)
     l_avg_collection= add_array_with_padding(l_avg_collection,  l_avg)
    
-    urban_avg_collection.append(np.mean(urban_avg))
+ 
     time_avg_collection.append(time_avg)
 
 
@@ -87,10 +85,9 @@ plt.grid()
 plt.show()
 
 
-plt.loglog(time_avg_collection, urban_avg_collection, 'o')
-plt.show()
 
-print(np.polyfit(np.log10(time_avg_collection), np.log10(urban_avg_collection), 1))
+
+
 
 
 
@@ -122,5 +119,5 @@ res = minimize_collapse_normalized(l_avg_collection, wt_avg_collection, time_avg
                                    n_interp=200)
 print(res)
 
-plot_before_after(l_avg_collection, wt_avg_collection, urban_avg_collection, res['beta'], res['inv_z'])
+plot_before_after(l_avg_collection, wt_avg_collection, time_avg_collection, res['beta'], res['inv_z'])
 

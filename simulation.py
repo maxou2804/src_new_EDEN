@@ -1,658 +1,818 @@
 import numpy as np
 from numba import njit, prange
-from numba.typed import List
 import random
 import csv
 
-# ---------- EDEN GROWTH ------------------
+
+import time
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.animation import FuncAnimation, PillowWriter
+from pathlib import Path
+
+import time
+from competitive_distance_probability import (
+    CompetitiveDistanceCalculator,
+    create_competitive_prob_params
+)
+
+# Import optimized radial/width functions
+from eden_growth_optimized import (
+    radial_profile_from_grid_parallel,
+    width_vs_arc_length_optimized
+)
+
+# ========== HELPER FUNCTIONS ==========
+
 @njit
 def get_neighbors(i, j, rows, cols):
-    """
-    Get valid Neumann neighbors (4-connectivity) for a given cell.
-    Returns a list of (row, col) tuples for valid neighbors.
-    """
+    """Get valid Neumann neighbors (4-connectivity)."""
     neighbors = []
-    # Up
     if i > 0:
         neighbors.append((i - 1, j))
-    # Down
     if i < rows - 1:
         neighbors.append((i + 1, j))
-    # Left
     if j > 0:
         neighbors.append((i, j - 1))
-    # Right
     if j < cols - 1:
         neighbors.append((i, j + 1))
-    
     return neighbors
 
 
 @njit
-def update_boundary(grid, boundary_set, new_i, new_j):
+def euclidean_distance(i1, j1, i2, j2):
+    """Calculate Euclidean distance between two points."""
+    return np.sqrt((i1 - i2)**2 + (j1 - j2)**2)
+
+
+# ========== ROUGHENED SEED INITIALIZATION ==========
+
+def create_roughened_seed(grid, center_i, center_j, radius, roughness=0.3, seed_id=1):
     """
-    Update the boundary set after urbanizing a cell.
-    Removes the newly urbanized cell and adds its non-urbanized neighbors.
+    Create a roughened circular seed instead of a smooth circle.
+    
+    Parameters:
+    -----------
+    grid : np.ndarray
+        Grid to place seed on
+    center_i, center_j : int
+        Center coordinates of seed
+    radius : float
+        Approximate radius of seed
+    roughness : float
+        Amount of roughness (0 = smooth circle, 1 = very rough)
+        Controls the standard deviation of radial variation
+    seed_id : int
+        ID to assign to this seed's cells
+    
+    Returns:
+    --------
+    grid : np.ndarray
+        Grid with roughened seed
+    n_cells : int
+        Number of cells in the seed
     """
     rows, cols = grid.shape
     
-    # Remove the newly urbanized point from boundary
+    # Generate random radial variations around the circle
+    # Use angular samples to create roughness
+    n_angles = max(int(2 * np.pi * radius), 20)
+    angles = np.linspace(0, 2*np.pi, n_angles, endpoint=False)
+    
+    # Create radial variations using random noise
+    np.random.seed(None)  # Ensure randomness
+    radial_noise = np.random.normal(0, roughness * radius, n_angles)
+    varied_radii = radius + radial_noise
+    
+    # Ensure radii stay positive and reasonable
+    varied_radii = np.clip(varied_radii, radius * 0.3, radius * 1.7)
+    
+    # Smooth the radial variations to avoid single-pixel noise
+    # Apply a simple moving average
+    window_size = max(3, n_angles // 20)
+    smoothed_radii = np.convolve(
+        np.concatenate([varied_radii[-window_size:], varied_radii, varied_radii[:window_size]]),
+        np.ones(window_size) / window_size,
+        mode='valid'
+    )
+    
+    # Place cells within the roughened boundary
+    n_cells = 0
+    for i in range(max(0, center_i - int(radius * 2)), 
+                   min(rows, center_i + int(radius * 2) + 1)):
+        for j in range(max(0, center_j - int(radius * 2)), 
+                       min(cols, center_j + int(radius * 2) + 1)):
+            
+            # Calculate angle and distance from center
+            di = i - center_i
+            dj = j - center_j
+            dist = np.sqrt(di**2 + dj**2)
+            angle = np.arctan2(dj, di)
+            
+            # Find the corresponding varied radius for this angle
+            angle_idx = int((angle + np.pi) / (2*np.pi) * n_angles) % n_angles
+            threshold_radius = smoothed_radii[angle_idx]
+            
+            # Place cell if within the varied radius
+            if dist <= threshold_radius and grid[i, j] == 0:
+                grid[i, j] = seed_id
+                n_cells += 1
+    
+    return grid, n_cells
+
+
+def initialize_roughened_seeds(grid_size, seed_configs):
+    """
+    Initialize multiple roughened seeds.
+    
+    Parameters:
+    -----------
+    grid_size : int
+        Size of square grid
+    seed_configs : list of dicts
+        Each dict contains:
+        - 'position': (i, j) tuple
+        - 'radius': float (initial radius)
+        - 'roughness': float (optional, default 0.3)
+    
+    Returns:
+    --------
+    grid : np.ndarray
+        Grid with all seeds initialized
+    boundary_sets : list of sets
+        Boundary sets for each seed
+    seed_ids : np.ndarray
+        Array of seed IDs
+    initial_sizes : dict
+        Initial size of each seed
+    """
+    grid = np.zeros((grid_size, grid_size), dtype=np.int32)
+    boundary_sets = []
+    seed_ids = []
+    initial_sizes = {}
+    
+    for seed_idx, config in enumerate(seed_configs):
+        seed_id = seed_idx + 1
+        position = config['position']
+        radius = config['radius']
+        roughness = config.get('roughness', 0.3)
+        
+        # Create roughened seed
+        grid, n_cells = create_roughened_seed(
+            grid, position[0], position[1], radius, roughness, seed_id
+        )
+        
+        initial_sizes[seed_id] = n_cells
+        seed_ids.append(seed_id)
+        
+        # Find boundary cells for this seed
+        boundary = set()
+        for i in range(grid_size):
+            for j in range(grid_size):
+                if grid[i, j] == seed_id:
+                    neighbors = get_neighbors(i, j, grid_size, grid_size)
+                    for ni, nj in neighbors:
+                        if grid[ni, nj] == 0 and (ni, nj) not in boundary:
+                            boundary.add((ni, nj))
+        
+        boundary_sets.append(boundary)
+    
+    return grid, boundary_sets, np.array(seed_ids), initial_sizes
+
+
+# ========== PROBABILITY-WEIGHTED GROWTH ==========
+
+@njit
+def calculate_cell_probability(grid, i, j, seed_id, prob_function_type=0, beta=1.0,use_kdtree=False,
+                                prob_params=None):
+    """
+    Calculate the probability weight for a boundary cell.
+    
+    Parameters:
+    -----------
+    grid : np.ndarray
+        Current grid state
+    i, j : int
+        Cell coordinates
+    seed_id : int
+        ID of the seed trying to claim this cell
+    prob_function_type : int
+        Type of probability function:
+        0 = uniform (all cells equal probability)
+        1 = neighbor_count (prefer cells with more occupied neighbors)
+  
+    Returns:
+    --------
+    probability : float
+        Probability weight for this cell (higher = more likely)
+    """
+    rows, cols = grid.shape
+    
+    if prob_function_type == 0:
+        # Uniform probability
+        return 1.0
+    if prob_function_type == 1:
+
+        
+        return 1.0
+
+    
+    
+
+
+@njit
+def update_boundary_weighted(grid, boundary_set, new_i, new_j, seed_id):
+    """Update boundary after urbanizing a cell."""
+    rows, cols = grid.shape
+    
     if (new_i, new_j) in boundary_set:
         boundary_set.remove((new_i, new_j))
     
-    # Check all neighbors of the newly urbanized cell
     neighbors = get_neighbors(new_i, new_j, rows, cols)
     
     for ni, nj in neighbors:
-        # If neighbor is not urbanized and not already in boundary, add it
         if grid[ni, nj] == 0 and (ni, nj) not in boundary_set:
             boundary_set.add((ni, nj))
     
     return boundary_set
 
 
-@njit
-def eden_growth_step(grid, boundary_list):
-    """
-    Perform one step of Eden growth.
-    
-    Parameters:
-    -----------
-    grid : np.ndarray (2D, dtype=np.int8 or bool)
-        The urbanization grid where 1/True = urbanized, 0/False = non-urbanized
-    boundary_list : List of tuples
-        List of (row, col) indices representing boundary points
-    
-    Returns:
-    --------
-    grid : np.ndarray
-        Updated grid
-    boundary_list : List of tuples
-        Updated boundary list
-    """
-    if len(boundary_list) == 0:
-        return grid, boundary_list
-    
-    # Pick a random boundary point
-    idx = random.randint(0, len(boundary_list) - 1)
-    new_i, new_j = boundary_list[idx]
-    
-    # Urbanize the selected point
-    grid[new_i, new_j] = 1
-    
-    # Convert boundary list to set for efficient operations
-    boundary_set = set(boundary_list)
-    
-    # Update boundary
-    boundary_set = update_boundary(grid, boundary_set, new_i, new_j)
-    
-    # Convert back to list
-    boundary_list = List(boundary_set)
-    
-    return grid, boundary_list
+def eden_growth_step_weighted(grid, boundary_set, seed_id, 
+                               prob_function_type=0, prob_params=None):
 
-
-@njit
-def eden_growth_simulate(grid, boundary_list, n_steps):
-    """
-    Simulate Eden growth for n_steps.
+    if len(boundary_set) == 0:
+        return grid, boundary_set
     
-    Parameters:
-    -----------
-    grid : np.ndarray (2D, dtype=np.int8 or bool)
-        The initial urbanization grid
-    boundary_list : List of tuples
-        Initial list of (row, col) indices representing boundary points
-    n_steps : int
-        Number of growth steps to simulate
-    
-    Returns:
-    --------
-    grid : np.ndarray
-        Final grid after n_steps
-    boundary_list : List of tuples
-        Final boundary list
-    """
-    for step in range(n_steps):
-        if len(boundary_list) == 0:
-            break
-        grid, boundary_list = eden_growth_step(grid, boundary_list)
-    
-    return grid, boundary_list
-
-
-def initialize_boundary(grid, initial_boundary_indices):
-    """
-    Helper function to convert boundary indices to Numba typed List.
-    
-    Parameters:
-    -----------
-    grid : np.ndarray
-        The urbanization grid
-    initial_boundary_indices : list of tuples
-        List of (row, col) indices for initial boundary points
-    
-    Returns:
-    --------
-    numba.typed.List
-        Typed list compatible with Numba
-    """
-    boundary_list = List()
-    for idx in initial_boundary_indices:
-        boundary_list.append(idx)
-    return boundary_list
-
-# ---------- PROFILE EXTRACTING --------------
-
-
-@njit
-def radial_profile_from_grid_single(grid, n_theta=10_000, ray_step=0.5):
-    """
-    Compute r(θ, t) by ray marching from the center.
-    Single-threaded optimized version using Numba.
-    
-    For each angle θ_k = 2πk/n_theta, march along the ray from the center
-    and record the furthest radius that intersects an occupied site.
-    
-    Parameters:
-    -----------
-    grid : np.ndarray (2D, dtype=np.int8 or bool)
-        The urbanization grid where 1/True = urbanized, 0/False = non-urbanized
-    n_theta : int
-        Number of angular samples (default: 10,000)
-    ray_step : float
-        Step size for ray marching (default: 0.5)
-    
-    Returns:
-    --------
-    thetas : np.ndarray
-        Array of angles in [0, 2π)
-    r_vals : np.ndarray
-        Array of maximum radii for each angle
-    """
-    h, w = grid.shape
-    cx = (h - 1) / 2.0
-    cy = (w - 1) / 2.0
-    
-    # Pre-compute angles and trig values (manually to avoid endpoint parameter)
-    thetas = np.empty(n_theta, dtype=np.float64)
-    cos_t = np.empty(n_theta, dtype=np.float64)
-    sin_t = np.empty(n_theta, dtype=np.float64)
-    
-    for k in range(n_theta):
-        theta = 2.0 * np.pi * k / n_theta
-        thetas[k] = theta
-        cos_t[k] = np.cos(theta)
-        sin_t[k] = np.sin(theta)
-    
-    rmax = min(cx, cy) - 1.0
-    r_vals = np.zeros(n_theta, dtype=np.float64)
-    
-    # Ray march for each angle
-    for k in range(n_theta):
-        ct = cos_t[k]
-        st = sin_t[k]
-        r = 0.0
-        r_last = 0.0
-        
-        while r <= rmax:
-            x = cx + r * ct
-            y = cy + r * st
-            
-            # Round to nearest lattice cell
-            ix = int(round(x))
-            iy = int(round(y))
-            
-            # Check bounds
-            if ix < 0 or ix >= h or iy < 0 or iy >= w:
-                break
-            
-            # Check if occupied
-            if grid[ix, iy]:
-                r_last = r
-            
-            r += ray_step
-        
-        r_vals[k] = r_last
-    
-    return thetas, r_vals
-
-
-@njit(parallel=True)
-def radial_profile_from_grid_parallel(grid, n_theta=10_000, ray_step=0.5):
-    """
-    Compute r(θ, t) by ray marching from the center.
-    Multi-threaded optimized version using Numba parallel execution.
-    
-    For each angle θ_k = 2πk/n_theta, march along the ray from the center
-    and record the furthest radius that intersects an occupied site.
-    
-    Parameters:
-    -----------
-    grid : np.ndarray (2D, dtype=np.int8 or bool)
-        The urbanization grid where 1/True = urbanized, 0/False = non-urbanized
-    n_theta : int
-        Number of angular samples (default: 10,000)
-    ray_step : float
-        Step size for ray marching (default: 0.5)
-    
-    Returns:
-    --------
-    thetas : np.ndarray
-        Array of angles in [0, 2π)
-    r_vals : np.ndarray
-        Array of maximum radii for each angle
-    """
-    h, w = grid.shape
-    cx = (h - 1) / 2.0
-    cy = (w - 1) / 2.0
-    
-    # Pre-compute angles and trig values (manually to avoid endpoint parameter)
-    thetas = np.empty(n_theta, dtype=np.float64)
-    cos_t = np.empty(n_theta, dtype=np.float64)
-    sin_t = np.empty(n_theta, dtype=np.float64)
-    
-    for k in range(n_theta):
-        theta = 2.0 * np.pi * k / n_theta
-        thetas[k] = theta
-        cos_t[k] = np.cos(theta)
-        sin_t[k] = np.sin(theta)
-    
-    rmax = min(cx, cy) - 1.0
-    r_vals = np.zeros(n_theta, dtype=np.float64)
-    
-    # Parallel ray march for each angle
-    for k in prange(n_theta):
-        ct = cos_t[k]
-        st = sin_t[k]
-        r = 0.0
-        r_last = 0.0
-        
-        while r <= rmax:
-            x = cx + r * ct
-            y = cy + r * st
-            
-            # Round to nearest lattice cell
-            ix = int(round(x))
-            iy = int(round(y))
-            
-            # Check bounds
-            if ix < 0 or ix >= h or iy < 0 or iy >= w:
-                break
-            
-            # Check if occupied
-            if grid[ix, iy]:
-                r_last = r
-            
-            r += ray_step
-        
-        r_vals[k] = r_last
-    
-    return thetas, r_vals
-
-
-def radial_profile_from_grid(grid, n_theta=10_000, ray_step=0.5, parallel=True):
-    """
-    Compute r(θ, t) by ray marching from the center.
-    
-    Wrapper function that automatically selects single-threaded or parallel
-    version based on the 'parallel' parameter.
-    
-    Parameters:
-    -----------
-    grid : np.ndarray (2D, dtype=np.int8 or bool)
-        The urbanization grid where 1/True = urbanized, 0/False = non-urbanized
-    n_theta : int
-        Number of angular samples (default: 10,000)
-    ray_step : float
-        Step size for ray marching (default: 0.5)
-    parallel : bool
-        If True, use parallel version (default: True)
-    
-    Returns:
-    --------
-    thetas : np.ndarray
-        Array of angles in [0, 2π)
-    r_vals : np.ndarray
-        Array of maximum radii for each angle
-    """
-    if parallel:
-        return radial_profile_from_grid_parallel(grid, n_theta, ray_step)
-    else:
-        return radial_profile_from_grid_single(grid, n_theta, ray_step)
-
-# ------ Compute of the statistics ----------- 
-
-@njit
-def _compute_sector_stats(r_sorted, N):
-    """
-    Helper function to compute sector statistics for a given N.
-    Splits r_sorted into N sectors and computes means and variances.
-    """
-    n_samples = len(r_sorted)
-    base_size = n_samples // N
-    remainder = n_samples % N
-    
-    means = np.empty(N, dtype=np.float64)
-    vars_ = np.empty(N, dtype=np.float64)
+    # Convert boundary to array
+    boundary_array = np.empty((len(boundary_set), 2), dtype=np.int64)
+    probabilities = np.empty(len(boundary_set), dtype=np.float64)
     
     idx = 0
-    for i in range(N):
-        # Calculate sector size (distribute remainder)
-        sector_size = base_size + (1 if i < remainder else 0)
+    for item in boundary_set:
+        boundary_array[idx, 0] = item[0]
+        boundary_array[idx, 1] = item[1]
         
-        if sector_size == 0:
-            means[i] = np.nan
-            vars_[i] = np.nan
-            continue
-        
-        # Extract sector
-        sector_end = idx + sector_size
-        
-        # Compute mean
-        sector_sum = 0.0
-        for j in range(idx, sector_end):
-            sector_sum += r_sorted[j]
-        mean_val = sector_sum / sector_size
-        means[i] = mean_val
-        
-        # Compute variance
-        var_sum = 0.0
-        for j in range(idx, sector_end):
-            diff = r_sorted[j] - mean_val
-            var_sum += diff * diff
-        vars_[i] = var_sum / sector_size
-        
-        idx = sector_end
+        # Calculate probability for this cell
+        probabilities[idx] = calculate_cell_probability(
+            grid, item[0], item[1], seed_id, 
+            prob_function_type, prob_params
+        )
+        idx += 1
     
-    return means, vars_
+    # Normalize probabilities
+    prob_sum = np.sum(probabilities)
+    if prob_sum > 0:
+        probabilities = probabilities / prob_sum
+    else:
+        probabilities = np.ones(len(probabilities)) / len(probabilities)
+    
+    # Select cell based on probability distribution
+    cumsum = np.cumsum(probabilities)
+    rand_val = np.random.random()
+    selected_idx = np.searchsorted(cumsum, rand_val)
+    
+    # Ensure valid index
+    if selected_idx >= len(boundary_array):
+        selected_idx = len(boundary_array) - 1
+    
+    new_i = boundary_array[selected_idx, 0]
+    new_j = boundary_array[selected_idx, 1]
+    
+    # Urbanize the cell
+    grid[new_i, new_j] = seed_id
+    
+    # Update boundary
+    boundary_set = update_boundary_weighted(grid, boundary_set, new_i, new_j, seed_id)
+    
+    return grid, boundary_set
+
+
 
 
 @njit
-def width_vs_arc_length_numba(theta, r, N_list):
+def get_cluster_bounding_box(grid, seed_id):
     """
-    Optimized Numba version of width_vs_arc_length.
+    Get bounding box for a cluster.
+    Returns (min_i, max_i, min_j, max_j) or None if cluster empty.
+    """
+    rows, cols = grid.shape
+    min_i, max_i = rows, 0
+    min_j, max_j = cols, 0
+    found = False
     
-    For each N in N_list (N sectors; Δθ = 2π/N):
-    - Split the (θ, r) samples into N contiguous sectors of ~equal size.
-    - For each sector i, compute ⟨r⟩_i and the sector variance ⟨(r-⟨r⟩_i)^2⟩.
-    - Compute w^2 = (1/N) Σ_i var_i and w = sqrt(w^2).
-    - Compute the *average* arc length ℓ̄ = Δθ * mean_i(⟨r⟩_i).
+    for i in range(rows):
+        for j in range(cols):
+            if grid[i, j] == seed_id:
+                found = True
+                if i < min_i:
+                    min_i = i
+                if i > max_i:
+                    max_i = i
+                if j < min_j:
+                    min_j = j
+                if j > max_j:
+                    max_j = j
+    
+    if not found:
+        return None
+    
+    return (min_i, max_i, min_j, max_j)
+
+
+@njit
+def bounding_boxes_close(bbox_a, bbox_b, margin=5):
+    """
+    Check if two bounding boxes are close enough to potentially touch.
+    Much faster than checking all cells!
+    """
+    if bbox_a is None or bbox_b is None:
+        return False
+    
+    min_i_a, max_i_a, min_j_a, max_j_a = bbox_a
+    min_i_b, max_i_b, min_j_b, max_j_b = bbox_b
+    
+    # Check if boxes overlap or are within margin
+    i_gap = max(0, min_i_b - max_i_a - 1, min_i_a - max_i_b - 1)
+    j_gap = max(0, min_j_b - max_j_a - 1, min_j_a - max_j_b - 1)
+    
+    # If gap in either dimension is large, they're not close
+    return i_gap <= margin and j_gap <= margin
+
+
+@njit
+def clusters_are_touching_optimized(grid, seed_a, seed_b, bbox_a, bbox_b):
+    """
+    Optimized touching check: only scan bounding box overlap region.
+    Much faster than scanning entire grid!
+    """
+    if bbox_a is None or bbox_b is None:
+        return False
+    
+    min_i_a, max_i_a, min_j_a, max_j_a = bbox_a
+    min_i_b, max_i_b, min_j_b, max_j_b = bbox_b
+    
+    # Find overlap region to scan
+    scan_min_i = max(min_i_a - 1, min_i_b - 1, 0)
+    scan_max_i = min(max_i_a + 1, max_i_b + 1, grid.shape[0] - 1)
+    scan_min_j = max(min_j_a - 1, min_j_b - 1, 0)
+    scan_max_j = min(max_j_a + 1, max_j_b + 1, grid.shape[1] - 1)
+    
+    # Only scan the overlap region (much smaller than full grid!)
+    for i in range(scan_min_i, scan_max_i + 1):
+        for j in range(scan_min_j, scan_max_j + 1):
+            if grid[i, j] == seed_a:
+                # Check if any neighbor is seed_b
+                neighbors = get_neighbors(i, j, grid.shape[0], grid.shape[1])
+                for ni, nj in neighbors:
+                    if grid[ni, nj] == seed_b:
+                        return True
+    
+    return False
+
+
+def check_and_merge_clusters_optimized(grid, boundary_sets, seed_ids, merger_map, grid_size):
+    """
+    OPTIMIZED merge checking:
+    1. Get bounding boxes for all clusters
+    2. Only check pairs whose boxes are close
+    3. Scan only overlap regions (not full grid)
+    
+    Expected speedup: 10-50× over naive version!
+    """
+    mergers_occurred = False
+    
+    # Find active seeds and their bounding boxes
+    active_seeds = []
+    bboxes = {}
+    
+    for sid in seed_ids:
+        if np.sum(grid == sid) > 0:
+            active_seeds.append(int(sid))
+            bboxes[int(sid)] = get_cluster_bounding_box(grid, sid)
+    
+    # Check pairs - but only if bounding boxes are close!
+    for i in range(len(active_seeds)):
+        for j in range(i + 1, len(active_seeds)):
+            seed_a = active_seeds[i]
+            seed_b = active_seeds[j]
+            
+            # Fast rejection: are bounding boxes even close?
+            if not bounding_boxes_close(bboxes[seed_a], bboxes[seed_b], margin=5):
+                continue  # Skip expensive touching check!
+            
+            # Boxes are close, check if actually touching
+            if clusters_are_touching_optimized(grid, seed_a, seed_b, 
+                                              bboxes[seed_a], bboxes[seed_b]):
+                # Merge: larger absorbs smaller
+                size_a = np.sum(grid == seed_a)
+                size_b = np.sum(grid == seed_b)
+                
+                if size_a >= size_b:
+                    dominant, absorbed = seed_a, seed_b
+                else:
+                    dominant, absorbed = seed_b, seed_a
+                
+                # Perform merge
+                merge_clusters(grid, boundary_sets, seed_ids, 
+                             dominant, absorbed, merger_map)
+                
+                mergers_occurred = True
+                
+                print(f"    Seed {absorbed} merged into Seed {dominant} "
+                      f"(bboxes were close)")
+                
+                # Update bounding boxes after merge
+                bboxes[dominant] = get_cluster_bounding_box(grid, dominant)
+                bboxes[absorbed] = None
+    
+    return mergers_occurred
+
+
+def merge_clusters(grid, boundary_sets, seed_ids, dominant, absorbed, merger_map):
+    """Merge absorbed cluster into dominant cluster."""
+    # Find indices
+    dominant_idx = np.where(seed_ids == dominant)[0][0]
+    absorbed_idx = np.where(seed_ids == absorbed)[0][0]
+    
+    # Relabel cells
+    grid[grid == absorbed] = dominant
+    
+    # Merge boundaries
+    boundary_sets[dominant_idx].update(boundary_sets[absorbed_idx])
+    
+    # Remove occupied cells from boundary
+    cells_to_remove = set()
+    for cell in boundary_sets[dominant_idx]:
+        i, j = cell
+        if grid[i, j] != 0:
+            cells_to_remove.add(cell)
+    
+    for cell in cells_to_remove:
+        boundary_sets[dominant_idx].discard(cell)
+    
+    # Clear absorbed boundary
+    boundary_sets[absorbed_idx].clear()
+    
+    # Update merger map
+    merger_map[absorbed] = dominant
+    for key in merger_map:
+        if merger_map[key] == absorbed:
+            merger_map[key] = dominant
+
+
+# ========== OPTIMIZED MAIN SIMULATION ==========
+
+def create_growth_animation(
+    frames, 
+    seed_ids, 
+    output_file, 
+    fps=10, 
+    title="Competitive Growth",
+    dpi=100
+):
+    """
+    Create animated GIF from captured frames.
     
     Parameters:
     -----------
-    theta : np.ndarray
-        Array of angles
-    r : np.ndarray
-        Array of radii corresponding to theta
-    N_list : np.ndarray
-        Array of sector counts to test
-    
-    Returns:
-    --------
-    ell_list : np.ndarray
-        Array of average arc lengths for each N
-    w_list : np.ndarray
-        Array of widths for each N
+    frames : list of np.ndarray
+        List of grid snapshots
+    seed_ids : np.ndarray
+        Seed IDs for color mapping
+    output_file : str
+        Output GIF filename
+    fps : int
+        Frames per second
+    title : str
+        Animation title
+    dpi : int
+        Resolution
     """
-    # Sort by theta
-    order = np.argsort(theta)
-    r_sorted = r[order]
+    if len(frames) == 0:
+        print("No frames to animate!")
+        return
     
-    n_samples = len(r_sorted)
-    n_N = len(N_list)
+    n_seeds = len(seed_ids)
     
-    ell_list = np.empty(n_N, dtype=np.float64)
-    w_list = np.empty(n_N, dtype=np.float64)
-    
-    for idx in range(n_N):
-        N = int(N_list[idx])
-        # Clip N to valid range
-        N = max(2, min(n_samples, N))
-        
-        # Compute sector statistics
-        means, vars_ = _compute_sector_stats(r_sorted, N)
-        
-        # Filter out NaN values (empty sectors)
-        valid_count = 0
-        mean_sum = 0.0
-        var_sum = 0.0
-        
-        for i in range(N):
-            if not np.isnan(means[i]) and not np.isnan(vars_[i]):
-                mean_sum += means[i]
-                var_sum += vars_[i]
-                valid_count += 1
-        
-        if valid_count > 0:
-            delta_theta = 2.0 * np.pi / N
-            ell_bar = delta_theta * (mean_sum / valid_count)
-            w_sq = var_sum / valid_count
-            w = np.sqrt(w_sq)
-        else:
-            ell_bar = np.nan
-            w = np.nan
-        
-        ell_list[idx] = ell_bar
-        w_list[idx] = w
-    
-    return ell_list, w_list
-
-
-@njit(parallel=True)
-def width_vs_arc_length_parallel(theta, r, N_list):
-    """
-    Parallel optimized Numba version of width_vs_arc_length.
-    
-    For each N in N_list (N sectors; Δθ = 2π/N):
-    - Split the (θ, r) samples into N contiguous sectors of ~equal size.
-    - For each sector i, compute ⟨r⟩_i and the sector variance ⟨(r-⟨r⟩_i)^2⟩.
-    - Compute w^2 = (1/N) Σ_i var_i and w = sqrt(w^2).
-    - Compute the *average* arc length ℓ̄ = Δθ * mean_i(⟨r⟩_i).
-    
-    Parameters:
-    -----------
-    theta : np.ndarray
-        Array of angles
-    r : np.ndarray
-        Array of radii corresponding to theta
-    N_list : np.ndarray
-        Array of sector counts to test
-    
-    Returns:
-    --------
-    ell_list : np.ndarray
-        Array of average arc lengths for each N
-    w_list : np.ndarray
-        Array of widths for each N
-    """
-    # Sort by theta
-    order = np.argsort(theta)
-    r_sorted = r[order]
-    
-    n_samples = len(r_sorted)
-    n_N = len(N_list)
-    
-    ell_list = np.empty(n_N, dtype=np.float64)
-    w_list = np.empty(n_N, dtype=np.float64)
-    
-    # Parallel loop over different N values
-    for idx in prange(n_N):
-        N = int(N_list[idx])
-        # Clip N to valid range
-        N = max(2, min(n_samples, N))
-        
-        # Compute sector statistics
-        means, vars_ = _compute_sector_stats(r_sorted, N)
-        
-        # Filter out NaN values (empty sectors)
-        valid_count = 0
-        mean_sum = 0.0
-        var_sum = 0.0
-        
-        for i in range(N):
-            if not np.isnan(means[i]) and not np.isnan(vars_[i]):
-                mean_sum += means[i]
-                var_sum += vars_[i]
-                valid_count += 1
-        
-        if valid_count > 0:
-            delta_theta = 2.0 * np.pi / N
-            ell_bar = delta_theta * (mean_sum / valid_count)
-            w_sq = var_sum / valid_count
-            w = np.sqrt(w_sq)
-        else:
-            ell_bar = np.nan
-            w = np.nan
-        
-        ell_list[idx] = ell_bar
-        w_list[idx] = w
-    
-    return ell_list, w_list
-
-
-def width_vs_arc_length(theta, r, N_list, parallel=True):
-    """
-    Compute width vs arc length for multiple sector counts.
-    
-    For each N in N_list (N sectors; Δθ = 2π/N):
-    - Split the (θ, r) samples into N contiguous sectors of ~equal size.
-    - For each sector i, compute ⟨r⟩_i and the sector variance ⟨(r-⟨r⟩_i)^2⟩.
-    - Compute w^2 = (1/N) Σ_i var_i and w = sqrt(w^2).
-    - Compute the *average* arc length ℓ̄ = Δθ * mean_i(⟨r⟩_i).
-    
-    Parameters:
-    -----------
-    theta : np.ndarray or list
-        Array of angles
-    r : np.ndarray or list
-        Array of radii corresponding to theta
-    N_list : np.ndarray or list
-        Array of sector counts to test
-    parallel : bool
-        If True, use parallel version (default: True)
-    
-    Returns:
-    --------
-    ell_list : np.ndarray
-        Array of average arc lengths for each N
-    w_list : np.ndarray
-        Array of widths for each N
-    """
-    # Convert to numpy arrays if needed
-    theta = np.asarray(theta, dtype=np.float64)
-    r = np.asarray(r, dtype=np.float64)
-    N_list = np.asarray(N_list, dtype=np.int64)
-    
-    if parallel:
-        return width_vs_arc_length_parallel(theta, r, N_list)
+    # Create colormap
+    if n_seeds == 1:
+        colors = ['white', 'lightblue', 'steelblue']
+        cmap = mcolors.LinearSegmentedColormap.from_list('custom', colors, N=3)
     else:
-        return width_vs_arc_length_numba(theta, r, N_list)
-
-
-
-
-
-
-
-
-
-
-
-def simulate(grid_size,
-             timesteps,
-             output_file,
-             metric_timestep,
-             N_sampling=10000,
-             num_N=20
-             ):
-
-
+        base_colors = ['white', 'tab:blue', 'tab:orange', 'tab:green', 
+                      'tab:red', 'tab:purple', 'tab:brown', 'tab:pink',
+                      'tab:gray', 'tab:olive', 'tab:cyan']
+        colors_to_use = base_colors[:n_seeds+1]
+        cmap = mcolors.ListedColormap(colors_to_use)
     
-    # ---------- INITIALIZATION ----------
+    # Create figure
+    fig, ax = plt.subplots(figsize=(8, 8))
+    
+    # Initial plot
+    im = ax.imshow(frames[0], cmap=cmap, interpolation='nearest', 
+                   vmin=0, vmax=n_seeds)
+    ax.axis('off')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    if n_seeds > 1:
+        cbar.set_ticks(range(n_seeds + 1))
+        labels = ['Empty'] + [f'Seed {i+1}' for i in range(n_seeds)]
+        cbar.set_ticklabels(labels)
+    
+    # Title with step counter
+    title_text = ax.text(0.5, 1.02, '', transform=ax.transAxes,
+                        ha='center', fontsize=12, fontweight='bold')
+    
+    # Cell count text
+    count_text = ax.text(0.02, 0.98, '', transform=ax.transAxes,
+                        ha='left', va='top', fontsize=10,
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    def update(frame_idx):
+        """Update function for animation."""
+        frame = frames[frame_idx]
+        im.set_array(frame)
+        
+        # Update title
+        title_text.set_text(f'{title} - Frame {frame_idx}/{len(frames)-1}')
+        
+        # Update cell count
+        n_cells = np.sum(frame > 0)
+        pct = (n_cells / frame.size) * 100
+        count_text.set_text(f'{n_cells:,} cells ({pct:.1f}%)')
+        
+        return [im, title_text, count_text]
+    
+    # Create animation
+    anim = FuncAnimation(fig, update, frames=len(frames), 
+                        interval=1000/fps, blit=True, repeat=True)
+    
+    # Save as GIF
+    writer = PillowWriter(fps=fps)
+    anim.save(output_file, writer=writer, dpi=dpi)
+    
+    plt.close(fig)
 
-    t=0
 
+
+def simulate_with_competitive_distance(
+    grid_size,
+    seed_configs,
+    timesteps,
+    output_file,
+    metric_timestep,
+    beta=1.0,
+    gamma=1.0,
+    update_frequency=50,  # Update probability data every N iterations
+    N_sampling=5000,
+    num_N=15,
+    merge_check_frequency=500,
+    create_animation=False,  # NEW: Enable/disable animation
+    animation_interval=100,  # NEW: Capture frame every N steps
+    animation_file=None  # NEW: Output GIF filename (auto-generated if None)
+):
+    """
+    Multi-seed simulation with competitive distance probability.
+    
+    Parameters:
+    -----------
+    grid_size : int
+        Grid size
+    seed_configs : list of dict
+        Seed configurations
+    timesteps : int
+        Total growth steps
+    output_file : str
+        Output CSV file
+    metric_timestep : int
+        Measurement frequency
+    beta : float
+        Distance exponent (0-2)
+        - 0: uniform (no distance effect)
+        - 1: linear distance penalty
+        - 2: strong distance penalty
+    update_frequency : int
+        Update probability calculator every N iterations
+        Higher = faster but less accurate
+        Lower = slower but more accurate
+    N_sampling : int
+        Angles for radial profile
+    num_N : int
+        N values for width analysis
+    create_animation : bool
+        If True, create animated GIF showing growth over time
+    animation_interval : int
+        Capture frame every N steps (lower = smoother but larger file)
+    animation_file : str, optional
+        Output GIF filename. If None, auto-generates from output_file
+    
+    Returns:
+    --------
+    grid : np.ndarray
+        Final grid
+    largest_seed_stats : dict
+        Statistics for largest seed
+    all_stats : dict
+        Statistics for all seeds
+    """
+
+    from eden_growth_optimized import (
+        radial_profile_from_grid_parallel,
+        width_vs_arc_length_optimized
+    )
+  
+    import csv
+    
+    print("="*70)
+    print("COMPETITIVE DISTANCE SIMULATION")
+    print("="*70)
+    print(f"Grid: {grid_size}×{grid_size}")
+    print(f"Seeds: {len(seed_configs)}")
+    print(f"Steps: {timesteps:,}")
+    print(f"Beta: {beta}")
+    print(f"Update frequency: every {update_frequency} iterations")
+    if create_animation:
+        print(f"Animation: ON (every {animation_interval} steps)")
+    print("="*70)
+    
+    # Initialize
+    grid, boundary_sets, seed_ids, initial_sizes = initialize_roughened_seeds(
+        grid_size, seed_configs
+    )
+    
+    print("\nInitial sizes:")
+    for sid, size in initial_sizes.items():
+        print(f"  Seed {sid}: {size} cells")
+    
+    # Initialize probability calculator
+    use_kdtree = max(len(b) for b in boundary_sets if len(b) > 0) > 100
+    print(f"\nUsing {'KD-tree' if use_kdtree else 'Numba'} for probability calculation")
+    
+    prob_params_list = create_competitive_prob_params(
+        boundary_sets, seed_ids, grid, beta, use_kdtree
+    )
+    
+    # Setup animation if requested
+    animation_frames = []
+    if create_animation:
+        # Determine output filename
+        if animation_file is None:
+            if output_file:
+                from pathlib import Path
+                base = Path(output_file).stem
+                animation_file = str(Path(output_file).parent / f"{base}_animation.gif")
+            else:
+                animation_file = "competitive_growth_animation.gif"
+        
+        print(f"Animation will be saved to: {animation_file}")
+        
+        # Capture initial frame
+        animation_frames.append(grid.copy())
+    
+    # Open output
     if output_file:
         f = open(output_file, 'w', newline='')
         writer = csv.writer(f)
-        writer.writerow(['timestep', 'l', 'w','urban_fraction'])
+        writer.writerow(['timestep', 'l', 'w', 'cells', 'boundary_size'])
+        io_buffer = []
     else:
+        f = None
         writer = None
-        w_results = []
-        mean_results = []
-        N_sectors_results = []
-        urban_fraction_list = []
-
-       # Random grid and city core
-    grid = np.zeros((grid_size,grid_size),dtype=np.int8)
-    center = int(grid_size//2.0)
-    grid[center, center] = 1
-
-
-    # Define initial boundary (neighbors of the seed)
-    initial_boundary = [
-        (center-1, center),  # up
-        (center+1, center),  # down
-        (center, center-1),  # left
-        (center, center+1)   # right
-        ]
-    # Convert to Numba typed list
-    boundary_list = initialize_boundary(grid, initial_boundary)
-
-    w_list=[]
-    ell_bar_list=[]
-    while t < timesteps:
-        # simulate for n=metric_timestep
-        grid, boundary_list = eden_growth_simulate(
-            grid, boundary_list, n_steps=metric_timestep)
-       
-        # udpdate the timestep
-        t+=metric_timestep
-        print(f'timestep {t}/{timesteps}')
-        # ray_marching
-        thetas,r=radial_profile_from_grid(grid=grid,n_theta=N_sampling,ray_step=0.5,parallel=True)
-
-        # metric calculation
-        # N_list estimation 
-        total_points=len(r)
-        min_N = 4
-        max_N = total_points // 5
-        if max_N >= min_N:
-            num_N = min(num_N, max_N - min_N + 1)
-            N_list = np.logspace(np.log10(min_N), np.log10(max_N), num_N, dtype=int)
-            N_list = sorted(set(N_list.tolist()))
-            
-       
-        ell,w = width_vs_arc_length_parallel(thetas, r, N_list)
-        w_list.append(w)
-        ell_bar_list.append(ell)
-        urban_fraction=len(grid[grid==1])/grid_size**2
-
-        # Write results
-        if writer is not None:
-            for ii in range(len(N_list)):
-                writer.writerow([t,ell[ii],w[ii],urban_fraction])
-        else :
-            print("met un output chacal")
-            break
-
-    # Close CSV
-    if writer is not None:
-        f.close()
-    print("Simulation done!")
-
-
-
-            
-                
-                
-             
-
-
-
+        io_buffer = None
     
+    # Growth loop
+    print("\nGrowing...")
+    t = 0
+    iteration = 0
+    N_list_cache = None
+    prev_len = 0
+    merger_map = {int(sid): int(sid) for sid in seed_ids}
+    
+    while t < timesteps:
+        # Find active seeds
+        active_seeds = [i for i in range(len(boundary_sets)) if len(boundary_sets[i]) > 0]
+        
+        if not active_seeds:
+            print("\nAll boundaries exhausted")
+            break
+        
+        # Update probability calculator periodically
+        if iteration % update_frequency == 0:
+            prob_params_list = create_competitive_prob_params(
+                boundary_sets, seed_ids, grid, beta, use_kdtree
+            )
+        
+        # Grow all active seeds
+        for seed_idx in active_seeds:
+            seed_id = int(seed_ids[seed_idx])
+            prob_calc = prob_params_list[seed_idx]
+            
+            # Grow using competitive distance
+            from competitive_distance_probability import eden_growth_step_competitive
+            grid, boundary_sets[seed_idx] = eden_growth_step_competitive(
+                grid, boundary_sets[seed_idx], seed_id, beta, gamma,
+                boundary_sets, seed_ids, use_kdtree, prob_calc
+            )
+            
+            t += 1
+            if t >= timesteps:
+                break
+        
+        iteration += 1
+        
+        # Check merges
+        if iteration % merge_check_frequency == 0:
+            mergers = check_and_merge_clusters_optimized(
+                grid, boundary_sets, seed_ids, merger_map, grid_size
+            )
+            if mergers:
+                print(f"\n  Mergers at iteration {iteration}")
+        
+        # Capture animation frame
+        if create_animation and t % animation_interval == 0:
+            animation_frames.append(grid.copy())
+        
+        # Metrics
+        if t % metric_timestep == 0:
+            print(f"Step {t:,}/{timesteps:,}", end='\r')
+            
+            if writer:
+                seed_sizes = {sid: np.sum(grid == sid) for sid in seed_ids}
+                largest_id = max(seed_sizes, key=seed_sizes.get)
+                
+                mask = (grid == largest_id).astype(np.int8)
+                if np.sum(mask) > 10:
+                    thetas, r = radial_profile_from_grid_parallel(mask, N_sampling, 0.5)
+                    
+                    if N_list_cache is None or len(r) > prev_len * 1.1:
+                        max_N = len(r) // 5
+                        if max_N >= 5:
+                            N_list_cache = np.logspace(
+                                np.log10(5), np.log10(max_N),
+                                min(num_N, max_N-4), dtype=np.int64
+                            )
+                            N_list_cache = np.unique(N_list_cache)
+                            prev_len = len(r)
+                    
+                    ell, w = width_vs_arc_length_optimized(thetas, r, N_list_cache)
+                    
+                    for ii in range(len(N_list_cache)):
+                        io_buffer.append([t, ell[ii], w[ii], seed_sizes[largest_id],
+                                        len(boundary_sets[largest_id-1])])
+                
+                if len(io_buffer) >= 1000:
+                    writer.writerows(io_buffer)
+                    io_buffer.clear()
+                    f.flush()
+    
+    print()
+    
+    if io_buffer and writer:
+        writer.writerows(io_buffer)
+    if f:
+        f.close()
+    
+    # Create animation if requested
+    if create_animation and len(animation_frames) > 0:
+        print("\nCreating animation...")
+        create_growth_animation(
+            animation_frames, 
+            seed_ids, 
+            animation_file,
+            fps=10,
+            title=f"Competitive Growth (β={beta})"
+        )
+        print(f"✓ Animation saved: {animation_file}")
+    
+    # Final stats
+    all_stats = {}
+    for sid in seed_ids:
+        n_cells = np.sum(grid == sid)
+        if n_cells > 0:
+            all_stats[sid] = {
+                'cells': n_cells,
+                'percentage': n_cells / (grid_size**2) * 100,
+                'initial_size': initial_sizes[sid],
+                'absorbed_seeds': [k for k, v in merger_map.items() if v == sid and k != sid]
+            }
+    
+    if len(all_stats) == 0:
+        print("\n⚠ All seeds were absorbed!")
+        # Return empty stats
+        return grid, {'cells': 0, 'percentage': 0}, {}
+    
+    largest_id = max(all_stats, key=lambda k: all_stats[k]['cells'])
+    largest_seed_stats = all_stats[largest_id]
+    
+    print("\n" + "="*70)
+    print(f"LARGEST: Seed {largest_id} ({largest_seed_stats['cells']:,} cells)")
+    if largest_seed_stats['absorbed_seeds']:
+        absorbed_list = ', '.join(map(str, largest_seed_stats['absorbed_seeds']))
+        print(f"  Absorbed: Seeds {absorbed_list}")
+    print("="*70)
+    
+    return grid, largest_seed_stats, all_stats
 
 
-
-
+# ========== EXAMPLES ==========
