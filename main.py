@@ -15,21 +15,21 @@ import os
 # === CONFIGURABLE PARAMETERS ===
 
 grid_sizes = [501]
-num_simulations_per_size = 5  # 🟡 CHANGE THIS to control how many runs per grid size
+num_simulations_per_size = 1  # 🟡 CHANGE THIS to control how many runs per grid size
 core_shape = "circle"
 radius=1
-metric_rate=100
-beta=1.0
+metric_rate=500
+beta=0.5
 gamma=1.0
 merge_check_frequency=100
-update_frequency=100
+update_frequency=200
 
 
 
 
 seed_configs = [
-        {'position': (250, 250), 'radius': 40, 'roughness': 0.3},
-        {'position': (400, 400), 'radius': 10, 'roughness': 0.3},
+        {'position': (250, 250), 'radius': 50, 'roughness': 0.3},
+        {'position': (350, 350), 'radius': 10, 'roughness': 0.3},
         {'position': (100, 100), 'radius': 10, 'roughness': 0.3},
         
         ]
@@ -39,11 +39,11 @@ seed_configs = [
 
 def compute_timesteps(L):
     # 🟢 Replace with your actual expression
-    return int(((L/2)**2)*np.pi*0.4)
+    return int(((L/2)**2)*np.pi*0.25)
 
 
 # Output base directory
-base_output_dir = "C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed_gravitational"
+base_output_dir = "C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed_beta_0"
 os.makedirs(base_output_dir, exist_ok=True)
 
 # === RUN SIMULATIONS ===
@@ -64,7 +64,7 @@ for size in grid_sizes:
 
         # Name of the output file
         output_file = os.path.join(
-            base_output_dir, f"simul_L_{size}_run_{run_id}.csv"
+            base_output_dir, f"simul_L_{size}_run_{run_id}_beta_{beta}.csv"
         )
      
 
@@ -82,7 +82,7 @@ for size in grid_sizes:
                                     merge_check_frequency=merge_check_frequency,
                                     create_animation=True,  # NEW: Enable/disable animation
                                     animation_interval=200,  # NEW: Capture frame every N steps
-                                    animation_file=base_output_dir + f"\\animation_L_{size}_run_{run_id}.gif" ) # NEW: Animation output file)
+                                    animation_file=base_output_dir + f"\\animation_L_{size}_run_{run_id}_beta_{beta}.gif" ) # NEW: Animation output file)
 
           
         print(f"    📝 Results saved to {output_file}" )
