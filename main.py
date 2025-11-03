@@ -39,11 +39,11 @@ seed_configs = [
 
 def compute_timesteps(L):
     # 🟢 Replace with your actual expression
-    return int(((L/2)**2)*np.pi*0.25)
+    return int(((L/2)**2)*np.pi*0.1)
 
 
 # Output base directory
-base_output_dir = "C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed_beta_0"
+base_output_dir = "C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output"
 os.makedirs(base_output_dir, exist_ok=True)
 
 # === RUN SIMULATIONS ===

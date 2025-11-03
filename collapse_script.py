@@ -11,7 +11,7 @@ from alpha_calculation_functions import read_directory, read_csv_at_time
 
 
 
-directory="C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed"
+directory="C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output"
 wt_avg_collection=[]
 l_avg_collection=[]
 urban_avg_collection=[]
@@ -25,7 +25,7 @@ l_collection=[]
 urban_collection=[]
 time_scalar_collection=[]
 
-time_serie= np.linspace(0.1,0.45,10)
+time_serie= np.linspace(0.1,0.99,10)
 
 for time in time_serie:
     print("wesh")
