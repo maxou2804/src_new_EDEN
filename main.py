@@ -1,5 +1,4 @@
 import numpy as np
-from core import create_city_core
 from simulation import simulate_with_competitive_distance
 import matplotlib.pyplot as plt
 import os
