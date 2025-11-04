@@ -3,6 +3,8 @@ from core import create_city_core
 from simulation import simulate_with_competitive_distance
 import matplotlib.pyplot as plt
 import os
+import random
+import math
 
 # Load parameters
 
@@ -17,14 +19,64 @@ import os
 grid_sizes = [501]
 num_simulations_per_size = 1  # 🟡 CHANGE THIS to control how many runs per grid size
 core_shape = "circle"
-radius=1
+
+r_lcc=50
+r_periph=100
+r_cluster=100
+roughness=0.3
 metric_rate=500
 beta=0.5
-gamma=1.0
+
+# write 0 to have non gravity probability
+gamma=1.5
 merge_check_frequency=100
 update_frequency=200
 
 
+def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
+    """
+    Generate seed configurations for urban simulation.
+    
+    Parameters:
+    - n: number of seeds (excluding the largest component)
+    - l: size of the grid
+    - r: radius around the largest component where seeds should be placed
+    - r_lcc: radius of the largest connected component (LCC)
+    - r_urb: list of radii for the seeds (length should be n)
+    - roughness: global roughness value for all seeds
+    
+    Returns:
+    - List of seed configuration dictionaries
+    """
+    seed_configs = []
+    
+    # Add the largest connected component at the center
+    center = (l / 2, l / 2)
+    seed_configs.append({
+        'position': center,
+        'radius': r_lcc,
+        'roughness': roughness
+    })
+    
+    # Generate n seeds randomly placed on a circle around the LCC
+    for i in range(n):
+        # Random angle in radians
+        angle = random.uniform(0, 2 * math.pi)
+        
+        # Calculate position on the circle of radius r around the center
+        x = center[0] + r * math.cos(angle)
+        y = center[1] + r * math.sin(angle)
+        
+        # Get radius from r_urb list
+        radius = r_urb[i]
+        
+        seed_configs.append({
+            'position': (x, y),
+            'radius': radius,
+            'roughness': roughness
+        })
+    
+    return seed_configs
 
 
 seed_configs = [
@@ -39,7 +91,7 @@ seed_configs = [
 
 def compute_timesteps(L):
     # 🟢 Replace with your actual expression
-    return int(((L/2)**2)*np.pi*0.1)
+    return int(((L/2)**2)*np.pi*0.3)
 
 
 # Output base directory
@@ -50,7 +102,7 @@ os.makedirs(base_output_dir, exist_ok=True)
 
 for size in grid_sizes:
    
- 
+    seed_configs = generate_seed_configs(n=2,l=size,r=r_periph,r_lcc=r_lcc,r_urb=r_cluster,roughness=roughness)
     timesteps = compute_timesteps(size)
     metric_timestep=int(timesteps/metric_rate)
    

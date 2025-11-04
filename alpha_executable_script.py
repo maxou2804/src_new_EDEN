@@ -16,7 +16,9 @@ wt_collection=[]
 l_collection=[]
 
 # directory="/Users/mika/Documents/PDM/outputs/13_10_25"
-directory = "C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed_gravitational"
+
+#directory = "C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed_gravitational"
+directory ="C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output"
 #time at which we do the alpha calculation (give 0 to 1)
 time_extract=0.9
 
@@ -73,7 +75,7 @@ plt.loglog(l_avg[beg_points_to_skip:-end_points_to_skip],l_avg[beg_points_to_ski
 plt.xlabel("l")
 plt.ylabel("w")
 plt.legend()
-#plt.savefig("/Users/mika/Documents/PDM/outputs/alpha_fit")
+plt.savefig("C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output\\alpha_fit")
 plt.show()
 
 
