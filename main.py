@@ -16,13 +16,13 @@ import math
 
 # === CONFIGURABLE PARAMETERS ===
 
-grid_sizes = [501]
-num_simulations_per_size = 1  # 🟡 CHANGE THIS to control how many runs per grid size
+grid_sizes = [505]
+num_simulations_per_size = 5  # 🟡 CHANGE THIS to control how many runs per grid size
 core_shape = "circle"
 
 r_lcc=50
-r_periph=100
-r_cluster=100
+r_periph=200
+r_cluster=[10]
 roughness=0.3
 metric_rate=500
 beta=0.5
@@ -51,7 +51,7 @@ def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
     seed_configs = []
     
     # Add the largest connected component at the center
-    center = (l / 2, l / 2)
+    center = (int(l / 2), int(l / 2))
     seed_configs.append({
         'position': center,
         'radius': r_lcc,
@@ -64,8 +64,8 @@ def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
         angle = random.uniform(0, 2 * math.pi)
         
         # Calculate position on the circle of radius r around the center
-        x = center[0] + r * math.cos(angle)
-        y = center[1] + r * math.sin(angle)
+        x =int( center[0] + r * math.cos(angle))
+        y =int( center[1] + r * math.sin(angle))
         
         # Get radius from r_urb list
         radius = r_urb[i]
@@ -91,7 +91,7 @@ seed_configs = [
 
 def compute_timesteps(L):
     # 🟢 Replace with your actual expression
-    return int(((L/2)**2)*np.pi*0.3)
+    return int(((L/2)**2)*np.pi*0.01)
 
 
 # Output base directory
@@ -102,17 +102,17 @@ os.makedirs(base_output_dir, exist_ok=True)
 
 for size in grid_sizes:
    
-    seed_configs = generate_seed_configs(n=2,l=size,r=r_periph,r_lcc=r_lcc,r_urb=r_cluster,roughness=roughness)
+
     timesteps = compute_timesteps(size)
-    metric_timestep=int(timesteps/metric_rate)
-   
 
     print(f"\n📦 Grid size: {size}x{size} | Timesteps: {timesteps}")
 
     for run_id in range(1, num_simulations_per_size + 1):
         print(f" 🔁 Simulation run {run_id}/{num_simulations_per_size} for size {size}")
 
-     
+        seed_configs = generate_seed_configs(n=len(r_cluster),l=size,r=r_periph,r_lcc=r_lcc,r_urb=r_cluster,roughness=roughness)
+   
+        metric_timestep=int(timesteps/metric_rate)
 
         # Name of the output file
         output_file = os.path.join(
