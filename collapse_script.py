@@ -11,11 +11,12 @@ from alpha_calculation_functions import read_directory, read_csv_at_time
 
 
 
-directory="C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output"
+directory="C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output\\r_study_new\\r_200"
 wt_avg_collection=[]
 l_avg_collection=[]
 urban_avg_collection=[]
 time_avg_collection=[]
+
 
 # time at which we do the alpha calculation 
 # time=-1
@@ -24,25 +25,28 @@ wt_collection=[]
 l_collection=[]
 urban_collection=[]
 time_scalar_collection=[]
+total_urb_collection=[]
 
-time_serie= np.linspace(0.5,0.7,10)
+time_serie= np.linspace(0.2,0.9,30)
 
 for time in time_serie:
-    print("wesh")
+
 
     for filename in os.listdir(directory):
 
         if filename.endswith(".csv"):
             filepath = os.path.join(directory, filename)
-            l,wt,time_scalar=read_csv_at_time(filepath,time)
+            l,wt,time_scalar,total_urb=read_csv_at_time(filepath,time)
 
             wt_collection.append(wt)
             l_collection.append(l)
             time_scalar_collection.append(time_scalar)
+            total_urb_collection.append(total_urb)
 
     l_avg,l_std=tolerant_mean(l_collection)
     wt_avg,w_std=tolerant_mean(wt_collection)
     time_avg=np.mean(time_scalar_collection)
+    total_urb_avg=np.mean(total_urb_collection)
 
 
 
@@ -55,10 +59,10 @@ for time in time_serie:
     wt_avg_collection=add_array_with_padding(wt_avg_collection, wt_avg)
     l_avg_collection= add_array_with_padding(l_avg_collection,  l_avg)
    
- 
+    urban_avg_collection.append(total_urb_avg)
     time_avg_collection.append(time_avg)
 
-
+    urban_avg_collection_array=np.array(urban_avg_collection)
 
     
 
@@ -71,7 +75,7 @@ for time in time_serie:
     #plt.loglog(x_sorted*P_sorted**(1/3), y_sorted*P_sorted**(-2/3), 'o', label=f"data t={time}")
 
     #plt.loglog(x_sorted*P_sorted**(1/3), y_sorted*P_sorted**(-2/3), 'o', label=f"data t={time}")
-    #plt.loglog(l_avg/urban_fraction**(2/3),wt_avg/urban_fraction**(1/3), 'o', label=f"data t={time}")
+    # plt.loglog(l_avg/total_urb_avg**(2/3),wt_avg/total_urb_avg**(1/3), 'o', label=f"data t={time}")
     plt.loglog(l_avg,wt_avg, 'o', label=f"data t={time}")    
     # plt.loglog(l/urban_fraction**(2/3),wt/urban_fraction**(1/3),'o',label=f"data collapsed t={time}")
     
@@ -83,7 +87,6 @@ plt.ylabel('w*P^(-beta)')
 plt.legend()
 plt.grid()
 plt.show()
-
 
 
 

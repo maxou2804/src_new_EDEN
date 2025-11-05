@@ -195,6 +195,26 @@ class CompetitiveDistanceCalculator:
         self.kdtrees = {}
         self.masses = {}
         self.needs_update = True
+    def calculate_probability_vectorized(self, i_array, j_array, seed_id):
+    
+        n_cells = len(i_array)
+        probabilities = np.ones(n_cells, dtype=np.float64)
+    
+        cell_positions = np.column_stack([i_array, j_array])
+    
+        for other_id, kdtree in self.kdtrees.items():
+            if other_id == seed_id:
+                continue
+        
+        # Query all cells at once (vectorized)
+            dists, _ = kdtree.query(cell_positions, k=1)
+        
+            if other_id in self.masses:
+                mass = self.masses[other_id]
+                valid = dists > 0
+                probabilities[valid] += mass / (dists[valid] ** self.beta)
+    
+        return probabilities
     
     def update_boundaries(self, boundary_sets, seed_ids, grid):
         """Update internal data structures with current boundaries."""
@@ -358,9 +378,9 @@ def eden_growth_step_competitive(
     probabilities = np.zeros(n_boundary, dtype=np.float64)
     
     if use_kdtree and isinstance(prob_calculator, CompetitiveDistanceCalculator):
-        for idx in range(n_boundary):
-            i, j = boundary_array[idx]
-            probabilities[idx] = prob_calculator.calculate_probability(i, j, seed_id)
+        probabilities = prob_calculator.calculate_probability_vectorized(
+    boundary_array[:, 0], boundary_array[:, 1], seed_id
+)
     else:
         beta, boundary_arrays, boundary_sizes, masses, n_clusters = prob_calculator
         for idx in range(n_boundary):
@@ -674,7 +694,113 @@ def check_and_merge_clusters_optimized(grid, boundary_sets, seed_ids, merger_map
                     mergers.append((seed_id_i, seed_id_j))
     
     return mergers
+# ============================================================================
+# SPATIAL PROBABILITY PROFILE
+# ============================================================================
 
+@njit
+def calculate_gaussian_probability(i, j, center_i, center_j, variance):
+    """
+    Calculate 2D Gaussian probability based on distance to center.
+    
+    Parameters:
+    -----------
+    i, j : int
+        Cell coordinates
+    center_i, center_j : float
+        Center of the grid
+    variance : float
+        Variance of the Gaussian (σ²)
+    
+    Returns:
+    --------
+    probability : float
+        Probability value (0-1) based on Gaussian distribution
+    """
+    dist_sq = (i - center_i) ** 2 + (j - center_j) ** 2
+    return np.exp(-dist_sq / (2 * variance))
+
+
+# ============================================================================
+# GROWTH FUNCTIONS (MODIFIED)
+# ============================================================================
+
+def eden_growth_step_competitive(
+    grid, boundary_set, seed_id, beta, gamma,
+    boundary_sets, seed_ids, use_kdtree=True, prob_calculator=None,
+    use_spatial_filter=False, center_i=None, center_j=None, spatial_variance=None
+):
+    """
+    Eden growth step with competitive distance probability.
+    
+    Additional Parameters:
+    ----------------------
+    use_spatial_filter : bool
+        If True, apply Gaussian spatial filter after competitive selection
+    center_i, center_j : float
+        Center coordinates for Gaussian filter
+    spatial_variance : float
+        Variance (σ²) for Gaussian filter
+    """
+    if len(boundary_set) == 0:
+        return grid, boundary_set
+    
+    boundary_array = np.array(list(boundary_set))
+    n_boundary = len(boundary_array)
+    probabilities = np.zeros(n_boundary, dtype=np.float64)
+    
+    if use_kdtree and isinstance(prob_calculator, CompetitiveDistanceCalculator):
+        for idx in range(n_boundary):
+            i, j = boundary_array[idx]
+            probabilities[idx] = prob_calculator.calculate_probability(i, j, seed_id)
+    else:
+        beta, boundary_arrays, boundary_sizes, masses, n_clusters = prob_calculator
+        for idx in range(n_boundary):
+            i, j = boundary_array[idx]
+            probabilities[idx] = calculate_competitive_probability_numba(
+                i, j, seed_id, beta, gamma,
+                boundary_arrays, boundary_sizes, masses, n_clusters
+            )
+    
+    # Normalize and select
+    prob_sum = np.sum(probabilities)
+    if prob_sum > 0:
+        probabilities /= prob_sum
+    else:
+        probabilities[:] = 1.0 / n_boundary
+    
+    cumsum = np.cumsum(probabilities)
+    rand_val = np.random.random()
+    selected_idx = np.searchsorted(cumsum, rand_val)
+    
+    if selected_idx >= n_boundary:
+        selected_idx = n_boundary - 1
+    
+    new_i, new_j = boundary_array[selected_idx]
+    
+    # Apply spatial Gaussian filter if enabled
+    if use_spatial_filter:
+        gaussian_prob = calculate_gaussian_probability(
+            new_i, new_j, center_i, center_j, spatial_variance
+        )
+        
+        # Decide whether to grow based on Gaussian probability
+        if np.random.random() > gaussian_prob:
+            # Don't grow this cell, return unchanged
+            return grid, boundary_set
+    
+    # Urbanize cell
+    grid[new_i, new_j] = seed_id
+    boundary_set.discard((new_i, new_j))
+    
+    # Add new neighbors
+    rows, cols = grid.shape
+    neighbors = get_neighbors(new_i, new_j, rows, cols)
+    for ni, nj in neighbors:
+        if grid[ni, nj] == 0 and (ni, nj) not in boundary_set:
+            boundary_set.add((ni, nj))
+    
+    return grid, boundary_set
 
 # ============================================================================
 # ANIMATION
@@ -735,7 +861,52 @@ def create_growth_animation(frames, seed_ids, output_file, fps=10, title="Growth
 
 
 # ============================================================================
-# MAIN SIMULATION
+# PURE EDEN GROWTH (NO COMPETITIVE DISTANCE)
+# ============================================================================
+
+def eden_growth_step_pure(grid, boundary_set, seed_id):
+    """
+    Pure Eden growth: uniform random selection from boundary.
+    No competitive distance calculations - much faster!
+    
+    Parameters:
+    -----------
+    grid : np.ndarray
+        Current grid
+    boundary_set : set
+        Set of boundary cells for this seed
+    seed_id : int
+        ID of this seed
+    
+    Returns:
+    --------
+    grid : np.ndarray
+        Updated grid
+    boundary_set : set
+        Updated boundary set
+    """
+    if len(boundary_set) == 0:
+        return grid, boundary_set
+    
+    # Uniform random selection - all cells equal probability
+    new_i, new_j = random.choice(list(boundary_set))
+    
+    # Urbanize cell
+    grid[new_i, new_j] = seed_id
+    boundary_set.discard((new_i, new_j))
+    
+    # Add new neighbors
+    rows, cols = grid.shape
+    neighbors = get_neighbors(new_i, new_j, rows, cols)
+    for ni, nj in neighbors:
+        if grid[ni, nj] == 0 and (ni, nj) not in boundary_set:
+            boundary_set.add((ni, nj))
+    
+    return grid, boundary_set
+
+
+# ============================================================================
+# MAIN SIMULATION (MODIFIED)
 # ============================================================================
 
 def simulate_with_competitive_distance(
@@ -752,10 +923,13 @@ def simulate_with_competitive_distance(
     num_N=20,
     create_animation=False,
     animation_interval=100,
-    animation_file=None
+    animation_file=None,
+    use_spatial_filter=False,
+    spatial_variance=None,
+    use_competitive_distance=True  # NEW PARAMETER
 ):
     """
-    Multi-seed simulation with competitive distance probability.
+    Multi-seed simulation with optional competitive distance probability.
     
     Parameters:
     -----------
@@ -770,11 +944,11 @@ def simulate_with_competitive_distance(
     metric_timestep : int
         Measurement frequency
     beta : float
-        Distance exponent (0-2)
+        Distance exponent (0-2) - only used if use_competitive_distance=True
     gamma : float
-        Probability exponent
+        Probability exponent - only used if use_competitive_distance=True
     update_frequency : int
-        Update probability calculator every N iterations
+        Update probability calculator every N iterations - only used if use_competitive_distance=True
     merge_check_frequency : int
         Check for merges every N iterations
     N_sampling : int
@@ -787,6 +961,13 @@ def simulate_with_competitive_distance(
         Capture frame every N steps
     animation_file : str, optional
         Output GIF filename
+    use_spatial_filter : bool
+        If True, apply 2D Gaussian spatial filter centered on grid
+    spatial_variance : float, optional
+        Variance (σ²) for Gaussian spatial filter
+    use_competitive_distance : bool
+        If True, use competitive distance model (KD-tree, beta, gamma)
+        If False, use pure Eden growth (uniform random, much faster)
     
     Returns:
     --------
@@ -799,16 +980,32 @@ def simulate_with_competitive_distance(
     """
     
     print("=" * 70)
-    print("COMPETITIVE DISTANCE SIMULATION")
+    if use_competitive_distance:
+        print("COMPETITIVE DISTANCE SIMULATION")
+        print(f"Beta: {beta}, Gamma: {gamma}")
+        print(f"Update frequency: every {update_frequency} iterations")
+    else:
+        print("PURE EDEN GROWTH SIMULATION")
+        print("Mode: Uniform random selection (no competitive distance)")
     print("=" * 70)
     print(f"Grid: {grid_size}×{grid_size}")
     print(f"Seeds: {len(seed_configs)}")
     print(f"Steps: {timesteps:,}")
-    print(f"Beta: {beta}, Gamma: {gamma}")
-    print(f"Update frequency: every {update_frequency} iterations")
+    if use_spatial_filter:
+        if spatial_variance is None:
+            spatial_variance = (grid_size / 4.0) ** 2
+        print(f"Spatial Gaussian filter: ON (σ² = {spatial_variance:.2f})")
     if create_animation:
         print(f"Animation: ON (every {animation_interval} steps)")
     print("=" * 70)
+    
+    # Calculate grid center for spatial filter
+    center_i = (grid_size - 1) / 2.0
+    center_j = (grid_size - 1) / 2.0
+    
+    # Set default spatial variance if needed
+    if use_spatial_filter and spatial_variance is None:
+        spatial_variance = (grid_size / 4.0) ** 2
     
     # Initialize
     grid, boundary_sets, seed_ids, initial_sizes = initialize_roughened_seeds(
@@ -819,13 +1016,19 @@ def simulate_with_competitive_distance(
     for sid, size in initial_sizes.items():
         print(f"  Seed {sid}: {size} cells")
     
-    # Initialize probability calculator
-    use_kdtree = max(len(b) for b in boundary_sets if len(b) > 0) > 100
-    print(f"\nUsing {'KD-tree' if use_kdtree else 'Numba'} for probability calculation")
+    # Initialize probability calculator ONLY if using competitive distance
+    prob_params_list = None
+    use_kdtree = False
     
-    prob_params_list = create_competitive_prob_params(
-        boundary_sets, seed_ids, grid, beta, use_kdtree
-    )
+    if use_competitive_distance:
+        use_kdtree = max(len(b) for b in boundary_sets if len(b) > 0) > 100
+        print(f"\nUsing {'KD-tree' if use_kdtree else 'Numba'} for probability calculation")
+        
+        prob_params_list = create_competitive_prob_params(
+            boundary_sets, seed_ids, grid, beta, use_kdtree
+        )
+    else:
+        print("\nNo probability calculation needed (pure Eden)")
     
     # Setup animation
     animation_frames = []
@@ -833,9 +1036,11 @@ def simulate_with_competitive_distance(
         if animation_file is None:
             if output_file:
                 base = Path(output_file).stem
-                animation_file = str(Path(output_file).parent / f"{base}_animation.gif")
+                mode_suffix = "competitive" if use_competitive_distance else "pure_eden"
+                animation_file = str(Path(output_file).parent / f"{base}_{mode_suffix}_animation.gif")
             else:
-                animation_file = "competitive_growth_animation.gif"
+                mode_suffix = "competitive" if use_competitive_distance else "pure_eden"
+                animation_file = f"{mode_suffix}_growth_animation.gif"
         print(f"Animation will be saved to: {animation_file}")
         animation_frames.append(grid.copy())
     
@@ -843,7 +1048,7 @@ def simulate_with_competitive_distance(
     if output_file:
         f = open(output_file, 'w', newline='')
         writer = csv.writer(f)
-        writer.writerow(['timestep', 'l', 'w', 'cells', 'boundary_size'])
+        writer.writerow(['timestep', 'l', 'w', 'cells', 'boundary_size', 'total_urbanized'])
         io_buffer = []
     else:
         f = None
@@ -857,9 +1062,9 @@ def simulate_with_competitive_distance(
     N_list_cache = None
     prev_len = 0
     
-    # Initialize merger_map as numpy array (not dict) for Numba compatibility
+    # Initialize merger_map as numpy array
     max_seed_id = int(np.max(seed_ids))
-    merger_map_array = np.arange(max_seed_id + 1, dtype=np.int64)  # Each seed maps to itself initially
+    merger_map_array = np.arange(max_seed_id + 1, dtype=np.int64)
     
     while t < timesteps:
         active_seeds = [i for i in range(len(boundary_sets)) if len(boundary_sets[i]) > 0]
@@ -868,8 +1073,8 @@ def simulate_with_competitive_distance(
             print("\nAll boundaries exhausted")
             break
         
-        # Update probability calculator periodically
-        if iteration % update_frequency == 0:
+        # Update probability calculator periodically (only if using competitive distance)
+        if use_competitive_distance and iteration % update_frequency == 0:
             prob_params_list = create_competitive_prob_params(
                 boundary_sets, seed_ids, grid, beta, use_kdtree
             )
@@ -877,12 +1082,28 @@ def simulate_with_competitive_distance(
         # Grow all active seeds
         for seed_idx in active_seeds:
             seed_id = int(seed_ids[seed_idx])
-            prob_calc = prob_params_list[seed_idx]
             
-            grid, boundary_sets[seed_idx] = eden_growth_step_competitive(
-                grid, boundary_sets[seed_idx], seed_id, beta, gamma,
-                boundary_sets, seed_ids, use_kdtree, prob_calc
-            )
+            if use_competitive_distance:
+                # Competitive distance growth
+                prob_calc = prob_params_list[seed_idx]
+                
+                grid, boundary_sets[seed_idx] = eden_growth_step_competitive(
+                    grid, boundary_sets[seed_idx], seed_id, beta, gamma,
+                    boundary_sets, seed_ids, use_kdtree, prob_calc,
+                    use_spatial_filter, center_i, center_j, spatial_variance
+                )
+            else:
+                # Pure Eden growth (much simpler and faster)
+                grid, boundary_sets[seed_idx] = eden_growth_step_pure(
+                    grid, boundary_sets[seed_idx], seed_id
+                )
+                
+                # Apply spatial filter if enabled (even in pure mode)
+                if use_spatial_filter:
+                    # Get the cell that was just added
+                    # Note: In pure mode, we'd need to refactor to apply filter before adding
+                    # For now, spatial filter is most useful with competitive mode
+                    pass
             
             t += 1
             if t >= timesteps:
@@ -910,6 +1131,9 @@ def simulate_with_competitive_distance(
                 seed_sizes = {sid: np.sum(grid == sid) for sid in seed_ids}
                 largest_id = max(seed_sizes, key=seed_sizes.get)
                 
+                # Calculate total urbanized area
+                total_urbanized = np.sum(grid > 0)
+                
                 mask = (grid == largest_id).astype(np.int8)
                 if np.sum(mask) > 10:
                     thetas, r = radial_profile_from_grid_parallel(mask, N_sampling, 0.5)
@@ -928,7 +1152,7 @@ def simulate_with_competitive_distance(
                     
                     for ii in range(len(N_list_cache)):
                         io_buffer.append([t, ell[ii], w[ii], seed_sizes[largest_id],
-                                        len(boundary_sets[largest_id - 1])])
+                                        len(boundary_sets[largest_id - 1]), total_urbanized])
                 
                 if len(io_buffer) >= 1000:
                     writer.writerows(io_buffer)
@@ -945,12 +1169,13 @@ def simulate_with_competitive_distance(
     # Create animation
     if create_animation and len(animation_frames) > 0:
         print("\nCreating animation...")
+        mode_str = f"β={beta}, γ={gamma}" if use_competitive_distance else "Pure Eden"
         create_growth_animation(
             animation_frames, 
             seed_ids, 
             animation_file,
             fps=10,
-            title=f"Competitive Growth (β={beta}, γ={gamma})"
+            title=f"Growth ({mode_str})"
         )
         print(f"✓ Animation saved: {animation_file}")
     
@@ -959,7 +1184,6 @@ def simulate_with_competitive_distance(
     for sid in seed_ids:
         n_cells = np.sum(grid == sid)
         if n_cells > 0:
-            # Find absorbed seeds: seeds where merger_map_array[k] == sid but k != sid
             absorbed_seeds = [int(k) for k in range(len(merger_map_array)) 
                             if merger_map_array[k] == sid and k != sid and k != 0]
             
@@ -985,5 +1209,380 @@ def simulate_with_competitive_distance(
     print("=" * 70)
     
     return grid, largest_seed_stats, all_stats
+
+
+
+
+
+
+
+
+
+
+# =======================================================================
+# PARALLEL ENSEMBLE SIMULATIONS
+# ============================================================================
+
+import multiprocessing as mp
+from functools import partial
+import time
+
+def run_single_realization(
+    realization_id,
+    grid_size,
+    seed_configs,
+    timesteps,
+    output_dir,
+    metric_timestep,
+    beta,
+    gamma,
+    update_frequency,
+    merge_check_frequency,
+    N_sampling,
+    num_N,
+    use_competitive_distance,
+    use_spatial_filter,
+    spatial_variance,
+    save_individual_outputs,
+    save_individual_grids,
+    random_seed_offset
+):
+    """
+    Run a single realization of the simulation.
+    
+    This function is designed to be called in parallel.
+    """
+    # Set unique random seed for this realization
+    np.random.seed(random_seed_offset + realization_id)
+    random.seed(random_seed_offset + realization_id)
+    
+    # Create output file path
+    if save_individual_outputs:
+        output_file = str(Path(output_dir) / f"realization_{realization_id:03d}.csv")
+    else:
+        output_file = None
+    
+    start_time = time.time()
+    
+    # Run simulation
+    grid, largest_stats, all_stats = simulate_with_competitive_distance(
+        grid_size=grid_size,
+        seed_configs=seed_configs,
+        timesteps=timesteps,
+        output_file=output_file,
+        metric_timestep=metric_timestep,
+        beta=beta,
+        gamma=gamma,
+        update_frequency=update_frequency,
+        merge_check_frequency=merge_check_frequency,
+        N_sampling=N_sampling,
+        num_N=num_N,
+        create_animation=False,  # Don't create animations in parallel runs
+        use_competitive_distance=use_competitive_distance,
+        use_spatial_filter=use_spatial_filter,
+        spatial_variance=spatial_variance
+    )
+    
+    elapsed_time = time.time() - start_time
+    
+    # Save grid if requested
+    if save_individual_grids:
+        grid_file = str(Path(output_dir) / f"grid_{realization_id:03d}.npy")
+        np.save(grid_file, grid)
+    
+    # Return summary statistics
+    result = {
+        'realization_id': realization_id,
+        'elapsed_time': elapsed_time,
+        'largest_seed_id': max(all_stats, key=lambda k: all_stats[k]['cells']) if all_stats else None,
+        'largest_seed_cells': largest_stats['cells'] if largest_stats else 0,
+        'largest_seed_percentage': largest_stats['percentage'] if largest_stats else 0,
+        'n_surviving_seeds': len(all_stats),
+        'all_stats': all_stats,
+        'grid_shape': grid.shape
+    }
+    
+    print(f"✓ Realization {realization_id} completed in {elapsed_time:.1f}s")
+    
+    return result
+
+
+def run_parallel_ensemble(
+    n_realizations,
+    grid_size,
+    seed_configs,
+    timesteps,
+    output_dir='ensemble_output',
+    n_workers=None,
+    metric_timestep=100,
+    beta=1.0,
+    gamma=1.0,
+    update_frequency=10,
+    merge_check_frequency=100,
+    N_sampling=10000,
+    num_N=20,
+    use_competitive_distance=True,
+    use_spatial_filter=False,
+    spatial_variance=None,
+    save_individual_outputs=True,
+    save_individual_grids=False,
+    random_seed_base=None
+):
+    """
+    Run multiple independent realizations of the simulation in parallel.
+    
+    Parameters:
+    -----------
+    n_realizations : int
+        Number of independent simulations to run
+    grid_size : int
+        Grid size for each simulation
+    seed_configs : list of dict
+        Seed configurations (same for all realizations)
+    timesteps : int
+        Number of growth steps per simulation
+    output_dir : str
+        Directory to save outputs
+    n_workers : int, optional
+        Number of parallel workers (default: CPU count - 1)
+    metric_timestep : int
+        Measurement frequency
+    beta : float
+        Distance exponent (if using competitive distance)
+    gamma : float
+        Probability exponent (if using competitive distance)
+    update_frequency : int
+        Update frequency for probability calculator
+    merge_check_frequency : int
+        Merge check frequency
+    N_sampling : int
+        Number of angles for radial profile
+    num_N : int
+        Number of N values for width analysis
+    use_competitive_distance : bool
+        If True, use competitive distance; if False, use pure Eden
+    use_spatial_filter : bool
+        If True, apply Gaussian spatial filter
+    spatial_variance : float, optional
+        Variance for spatial filter
+    save_individual_outputs : bool
+        If True, save CSV for each realization
+    save_individual_grids : bool
+        If True, save final grid as .npy for each realization
+    random_seed_base : int, optional
+        Base random seed (default: current time)
+    
+    Returns:
+    --------
+    results : list of dict
+        Summary statistics for each realization
+    aggregate_stats : dict
+        Aggregated statistics across all realizations
+    """
+    
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Set default number of workers
+    if n_workers is None:
+        n_workers = max(1, mp.cpu_count() - 1)
+    
+    # Set random seed base
+    if random_seed_base is None:
+        random_seed_base = int(time.time() * 1000) % 1000000
+    
+    print("=" * 70)
+    print("PARALLEL ENSEMBLE SIMULATION")
+    print("=" * 70)
+    print(f"Realizations: {n_realizations}")
+    print(f"Workers: {n_workers}")
+    print(f"Grid: {grid_size}×{grid_size}")
+    print(f"Seeds: {len(seed_configs)}")
+    print(f"Steps per realization: {timesteps:,}")
+    if use_competitive_distance:
+        print(f"Mode: Competitive Distance (β={beta}, γ={gamma})")
+    else:
+        print(f"Mode: Pure Eden")
+    print(f"Output directory: {output_dir}")
+    print(f"Random seed base: {random_seed_base}")
+    print("=" * 70)
+    
+    start_time = time.time()
+    
+    # Create partial function with fixed parameters
+    run_func = partial(
+        run_single_realization,
+        grid_size=grid_size,
+        seed_configs=seed_configs,
+        timesteps=timesteps,
+        output_dir=output_dir,
+        metric_timestep=metric_timestep,
+        beta=beta,
+        gamma=gamma,
+        update_frequency=update_frequency,
+        merge_check_frequency=merge_check_frequency,
+        N_sampling=N_sampling,
+        num_N=num_N,
+        use_competitive_distance=use_competitive_distance,
+        use_spatial_filter=use_spatial_filter,
+        spatial_variance=spatial_variance,
+        save_individual_outputs=save_individual_outputs,
+        save_individual_grids=save_individual_grids,
+        random_seed_offset=random_seed_base
+    )
+    
+    # Run simulations in parallel
+    print(f"\nStarting {n_realizations} parallel simulations...")
+    
+    with mp.Pool(processes=n_workers) as pool:
+        results = pool.map(run_func, range(n_realizations))
+    
+    total_time = time.time() - start_time
+    
+    # Aggregate statistics
+    print("\n" + "=" * 70)
+    print("AGGREGATING RESULTS")
+    print("=" * 70)
+    
+    aggregate_stats = aggregate_ensemble_results(results, seed_configs)
+    
+    # Save aggregate results
+    save_aggregate_results(results, aggregate_stats, output_path)
+    
+    print(f"\n✓ All {n_realizations} realizations completed in {total_time:.1f}s")
+    print(f"  Average time per realization: {total_time/n_realizations:.1f}s")
+    print(f"  Speedup vs sequential: {sum(r['elapsed_time'] for r in results)/total_time:.1f}x")
+    
+    return results, aggregate_stats
+
+
+def aggregate_ensemble_results(results, seed_configs):
+    """
+    Aggregate statistics across all realizations.
+    
+    Returns:
+    --------
+    aggregate_stats : dict
+        Contains mean, std, min, max for various metrics
+    """
+    n_realizations = len(results)
+    n_seeds = len(seed_configs)
+    
+    # Extract metrics
+    largest_cells = np.array([r['largest_seed_cells'] for r in results])
+    largest_pcts = np.array([r['largest_seed_percentage'] for r in results])
+    n_surviving = np.array([r['n_surviving_seeds'] for r in results])
+    times = np.array([r['elapsed_time'] for r in results])
+    
+    # Count wins per seed
+    seed_wins = {i+1: 0 for i in range(n_seeds)}
+    for r in results:
+        if r['largest_seed_id'] is not None:
+            seed_wins[r['largest_seed_id']] += 1
+    
+    aggregate_stats = {
+        'n_realizations': n_realizations,
+        'n_seeds': n_seeds,
+        
+        # Largest cluster size
+        'largest_cells_mean': np.mean(largest_cells),
+        'largest_cells_std': np.std(largest_cells),
+        'largest_cells_min': np.min(largest_cells),
+        'largest_cells_max': np.max(largest_cells),
+        
+        # Largest cluster percentage
+        'largest_pct_mean': np.mean(largest_pcts),
+        'largest_pct_std': np.std(largest_pcts),
+        'largest_pct_min': np.min(largest_pcts),
+        'largest_pct_max': np.max(largest_pcts),
+        
+        # Surviving seeds
+        'n_surviving_mean': np.mean(n_surviving),
+        'n_surviving_std': np.std(n_surviving),
+        'n_surviving_min': np.min(n_surviving),
+        'n_surviving_max': np.max(n_surviving),
+        
+        # Computation time
+        'time_mean': np.mean(times),
+        'time_std': np.std(times),
+        'time_min': np.min(times),
+        'time_max': np.max(times),
+        
+        # Win statistics
+        'seed_wins': seed_wins,
+        'seed_win_rates': {k: v/n_realizations for k, v in seed_wins.items()}
+    }
+    
+    # Print summary
+    print(f"\nLargest cluster size: {aggregate_stats['largest_cells_mean']:.0f} ± "
+          f"{aggregate_stats['largest_cells_std']:.0f} cells")
+    print(f"Largest cluster %: {aggregate_stats['largest_pct_mean']:.1f} ± "
+          f"{aggregate_stats['largest_pct_std']:.1f}%")
+    print(f"Surviving seeds: {aggregate_stats['n_surviving_mean']:.1f} ± "
+          f"{aggregate_stats['n_surviving_std']:.1f}")
+    
+    print("\nWin rates per seed:")
+    for seed_id, win_rate in sorted(aggregate_stats['seed_win_rates'].items()):
+        print(f"  Seed {seed_id}: {win_rate*100:.1f}% ({seed_wins[seed_id]}/{n_realizations} wins)")
+    
+    return aggregate_stats
+
+
+def save_aggregate_results(results, aggregate_stats, output_path):
+    """Save aggregated results to files."""
+    
+    # Save summary statistics
+    summary_file = output_path / 'aggregate_summary.txt'
+    with open(summary_file, 'w') as f:
+        f.write("ENSEMBLE SIMULATION SUMMARY\n")
+        f.write("=" * 70 + "\n\n")
+        
+        f.write(f"Number of realizations: {aggregate_stats['n_realizations']}\n")
+        f.write(f"Number of seeds: {aggregate_stats['n_seeds']}\n\n")
+        
+        f.write("LARGEST CLUSTER SIZE:\n")
+        f.write(f"  Mean: {aggregate_stats['largest_cells_mean']:.0f}\n")
+        f.write(f"  Std:  {aggregate_stats['largest_cells_std']:.0f}\n")
+        f.write(f"  Min:  {aggregate_stats['largest_cells_min']:.0f}\n")
+        f.write(f"  Max:  {aggregate_stats['largest_cells_max']:.0f}\n\n")
+        
+        f.write("LARGEST CLUSTER PERCENTAGE:\n")
+        f.write(f"  Mean: {aggregate_stats['largest_pct_mean']:.2f}%\n")
+        f.write(f"  Std:  {aggregate_stats['largest_pct_std']:.2f}%\n")
+        f.write(f"  Min:  {aggregate_stats['largest_pct_min']:.2f}%\n")
+        f.write(f"  Max:  {aggregate_stats['largest_pct_max']:.2f}%\n\n")
+        
+        f.write("SURVIVING SEEDS:\n")
+        f.write(f"  Mean: {aggregate_stats['n_surviving_mean']:.2f}\n")
+        f.write(f"  Std:  {aggregate_stats['n_surviving_std']:.2f}\n")
+        f.write(f"  Min:  {aggregate_stats['n_surviving_min']:.0f}\n")
+        f.write(f"  Max:  {aggregate_stats['n_surviving_max']:.0f}\n\n")
+        
+        f.write("WIN RATES PER SEED:\n")
+        for seed_id, win_rate in sorted(aggregate_stats['seed_win_rates'].items()):
+            wins = aggregate_stats['seed_wins'][seed_id]
+            f.write(f"  Seed {seed_id}: {win_rate*100:.1f}% ({wins}/{aggregate_stats['n_realizations']})\n")
+    
+    print(f"\n✓ Summary saved to: {summary_file}")
+    
+    # Save detailed results as CSV
+    results_file = output_path / 'all_realizations.csv'
+    with open(results_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['realization_id', 'largest_seed_id', 'largest_cells', 
+                        'largest_pct', 'n_surviving', 'elapsed_time'])
+        
+        for r in results:
+            writer.writerow([
+                r['realization_id'],
+                r['largest_seed_id'],
+                r['largest_seed_cells'],
+                r['largest_seed_percentage'],
+                r['n_surviving_seeds'],
+                r['elapsed_time']
+            ])
+    
+    print(f"✓ Detailed results saved to: {results_file}")
 
 

@@ -1,5 +1,5 @@
 import numpy as np
-from simulation import simulate_with_competitive_distance
+from simulation import simulate_with_competitive_distance, run_parallel_ensemble
 import matplotlib.pyplot as plt
 import os
 import random
@@ -15,21 +15,24 @@ import math
 
 # === CONFIGURABLE PARAMETERS ===
 
-grid_sizes = [505]
-num_simulations_per_size = 5  # 🟡 CHANGE THIS to control how many runs per grid size
+size = 800
+num_simulations_per_size = 10 # 🟡 CHANGE THIS to control how many runs per grid size
 core_shape = "circle"
 
+
+radius_collection=[5]
+#[30,50,70,100,150,180]
 r_lcc=50
-r_periph=200
-r_cluster=[10]
-roughness=0.3
-metric_rate=500
+r_cluster=[5]
+roughness=0
+metric_rate=1000
 beta=0.5
+spatial_variance = (10 ) ** 2
 
 # write 0 to have non gravity probability
-gamma=1.5
+gamma=0
 merge_check_frequency=100
-update_frequency=200
+update_frequency=100000
 
 
 def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
@@ -78,52 +81,94 @@ def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
     return seed_configs
 
 
-seed_configs = [
-        {'position': (250, 250), 'radius': 50, 'roughness': 0.3},
-        {'position': (350, 350), 'radius': 10, 'roughness': 0.3},
-        {'position': (100, 100), 'radius': 10, 'roughness': 0.3},
-        
-        ]
-
 
 # Function to compute timesteps based on grid size
 
 def compute_timesteps(L):
     # 🟢 Replace with your actual expression
-    return int(((L/2)**2)*np.pi*0.01)
+    return int(((L/2)**2-100**2)*np.pi*0.5)
 
 
 # Output base directory
-base_output_dir = "C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output"
-os.makedirs(base_output_dir, exist_ok=True)
+
 
 # === RUN SIMULATIONS ===
 
-for size in grid_sizes:
    
 
-    timesteps = compute_timesteps(size)
+#     timesteps = compute_timesteps(size)
 
-    print(f"\n📦 Grid size: {size}x{size} | Timesteps: {timesteps}")
+#     print(f"\n📦 Grid size: {size}x{size} | Timesteps: {timesteps}")
 
-    for run_id in range(1, num_simulations_per_size + 1):
-        print(f" 🔁 Simulation run {run_id}/{num_simulations_per_size} for size {size}")
+#     for run_id in range(1, num_simulations_per_size + 1):
+#         print(f" 🔁 Simulation run {run_id}/{num_simulations_per_size} for size {size}")
 
-        seed_configs = generate_seed_configs(n=len(r_cluster),l=size,r=r_periph,r_lcc=r_lcc,r_urb=r_cluster,roughness=roughness)
+#         seed_configs = generate_seed_configs(n=0,l=size,r=radius,r_lcc=r_lcc,r_urb=r_cluster,roughness=roughness)
    
-        metric_timestep=int(timesteps/metric_rate)
+#         metric_timestep=int(timesteps/metric_rate)
 
-        # Name of the output file
-        output_file = os.path.join(
-            base_output_dir, f"simul_L_{size}_run_{run_id}_beta_{beta}.csv"
-        )
+#         # Name of the output file
+#         output_file = os.path.join(
+#             base_output_dir, f"simul_r_periphery_{radius}_run_{run_id}.csv"
+#         )
      
 
+
+      
+
+radius=200
+
+base_output_dir = f"C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output\\r_study_new\\r_200"
+os.makedirs(base_output_dir, exist_ok=True)
+
+
+seed_configs = generate_seed_configs(n=1, l=size, r=radius, r_lcc=50, r_urb=[5], roughness=0.1)
+
+timesteps = compute_timesteps(size)
+
+
+
+
+
+        # Name of the output file
+output_file = os.path.join(
+            base_output_dir, f"simul.csv")
+
+
         # Run simulation
-        grid, largest_seed_stats, all_stats= simulate_with_competitive_distance (grid_size=size,
+# grid, largest_seed_stats, all_stats= simulate_with_competitive_distance (grid_size=size,
+#                                     seed_configs=seed_configs,
+#                                     timesteps=timesteps,
+#                                     output_file=output_file,
+#                                     beta=beta,
+#                                     gamma=gamma,
+#                                     metric_timestep=metric_rate,
+#                                     N_sampling=10000,
+#                                     num_N=30,
+#                                     update_frequency=update_frequency,
+#                                     merge_check_frequency=merge_check_frequency,
+#                                     create_animation=True,  # NEW: Enable/disable animation
+#                                     animation_interval=5000,  # NEW: Capture frame every N steps
+#                                     use_spatial_filter=False,
+#                                     spatial_variance=spatial_variance,
+#                                     animation_file=base_output_dir + f"\\animation_r_periphery_{radius}_run_test.gif",
+#                                     use_competitive_distance=False ) # NEW: Animation output file)
+
+          
+# print(f"    📝 Results saved to {output_file}" )
+
+
+
+
+
+
+
+if __name__ == '__main__':
+    grid, largest_seed_stats=  run_parallel_ensemble (grid_size=size,
+                                    n_realizations=50,
                                     seed_configs=seed_configs,
                                     timesteps=timesteps,
-                                    output_file=output_file,
+                                    output_dir=base_output_dir,
                                     beta=beta,
                                     gamma=gamma,
                                     metric_timestep=metric_rate,
@@ -131,15 +176,9 @@ for size in grid_sizes:
                                     num_N=30,
                                     update_frequency=update_frequency,
                                     merge_check_frequency=merge_check_frequency,
-                                    create_animation=True,  # NEW: Enable/disable animation
-                                    animation_interval=200,  # NEW: Capture frame every N steps
-                                    animation_file=base_output_dir + f"\\animation_L_{size}_run_{run_id}_beta_{beta}.gif" ) # NEW: Animation output file)
+                                  # NEW: Capture frame every N steps
+                                    use_spatial_filter=False,
+                                    spatial_variance=spatial_variance,
+                                    use_competitive_distance=False ) # NEW: Animation output file)
 
-          
-        print(f"    📝 Results saved to {output_file}" )
-
-      
-
-print("\n✅ All simulations completed.")
-
-
+    print("\n✅ All simulations completed.")

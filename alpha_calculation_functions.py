@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 
 
-def read_csv_at_time(filename, given_time, col_time="timestep",col_l="l", col_w="w"
+def read_csv_at_time(filename, given_time, col_time="timestep",col_l="l", col_w="w",col_urb="total_urbanized"
 ):
     """
     Reads a CSV file and extracts all rows for a given time,
@@ -53,6 +53,7 @@ def read_csv_at_time(filename, given_time, col_time="timestep",col_l="l", col_w=
         l_array = filtered[col_l].values
         w_array = filtered[col_w].values
         time= filtered[col_time].values[0]  # Same for all rows
+        total_urb=filtered[col_urb].values[0]
     else:
         print(f"No rows for time {given_time} in {filename}.")
         N_array = np.array([])
@@ -60,7 +61,7 @@ def read_csv_at_time(filename, given_time, col_time="timestep",col_l="l", col_w=
         radius_array = np.array([])
         
 
-    return l_array, w_array,time
+    return l_array, w_array,time,total_urb
 
 
 
