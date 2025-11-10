@@ -19,7 +19,8 @@ from scipy.spatial import cKDTree
 import csv
 import random
 from pathlib import Path
-
+from scipy.ndimage import gaussian_filter
+import math
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -49,6 +50,50 @@ def euclidean_distance(i1, j1, i2, j2):
 # ============================================================================
 # SEED INITIALIZATION
 # ============================================================================
+
+def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
+    """
+    Generate seed configurations for urban simulation.
+    
+    Parameters:
+    - n: number of seeds (excluding the largest component)
+    - l: size of the grid
+    - r: radius around the largest component where seeds should be placed
+    - r_lcc: radius of the largest connected component (LCC)
+    - r_urb: list of radii for the seeds (length should be n)
+    - roughness: global roughness value for all seeds
+    
+    Returns:
+    - List of seed configuration dictionaries
+    """
+    seed_configs = []
+    
+    # Add the largest connected component at the center
+    center = (int(l / 2), int(l / 2))
+    seed_configs.append({
+        'position': center,
+        'radius': r_lcc,
+        'roughness': roughness
+    })
+    
+    # Generate n seeds randomly placed on a circle around the LCC
+    for i in range(n):
+        # Random angle in radians
+        angle = random.uniform(0, 2 * math.pi)
+        r_rand= r + np.random.normal(loc=0,scale=5)
+        # Calculate position on the circle of radius r around the center
+        x =int( center[0] + r_rand * math.cos(angle))
+        y =int( center[1] + r_rand * math.sin(angle))
+        
+        # Get radius from r_urb list
+        radius = r_urb[i]
+        
+        seed_configs.append({
+            'position': (x, y),
+            'radius': radius,
+            'roughness': roughness
+        })
+        return seed_configs
 
 def create_roughened_seed(grid, center_i, center_j, radius, roughness=0.3, seed_id=1):
     """
@@ -110,6 +155,66 @@ def create_roughened_seed(grid, center_i, center_j, radius, roughness=0.3, seed_
             if dist <= threshold_radius and grid[i, j] == 0:
                 grid[i, j] = seed_id
                 n_cells += 1
+    
+    return grid, n_cells
+
+
+    from scipy.ndimage import gaussian_filter
+
+    
+
+def create_urban_cluster(grid, center_i, center_j, radius, complexity=0.5, 
+                         compactness=0.7, seed_id=1):
+    """
+    Create an urban cluster using noise-based organic shapes.
+    
+    Parameters:
+    -----------
+    complexity : float (0-1)
+        Higher = more irregular boundaries (like sprawling suburbs)
+    compactness : float (0-1)
+        Higher = more compact (like dense city), lower = more sprawling
+    """
+    rows, cols = grid.shape
+    target_area = np.pi * radius**2
+    
+    # Create noise field
+    np.random.seed(None)
+    noise_scale = radius * (0.3 + 0.4 * complexity)
+    
+    # Generate random noise
+    search_radius = int(radius * 2)
+    local_noise = np.random.randn(search_radius * 2, search_radius * 2)
+    smoothed_noise = gaussian_filter(local_noise, sigma=noise_scale/2)
+    
+    # Calculate distance-based probability field
+    candidate_cells = []
+    for i in range(max(0, center_i - search_radius), 
+                   min(rows, center_i + search_radius)):
+        for j in range(max(0, center_j - search_radius), 
+                       min(cols, center_j + search_radius)):
+            if grid[i, j] == 0:
+                di = i - center_i
+                dj = j - center_j
+                dist = np.sqrt(di**2 + dj**2)
+                
+                # Combine distance decay with noise
+                dist_factor = np.exp(-dist / (radius * compactness))
+                noise_i = min(di + search_radius, smoothed_noise.shape[0]-1)
+                noise_j = min(dj + search_radius, smoothed_noise.shape[1]-1)
+                noise_val = smoothed_noise[noise_i, noise_j]
+                
+                probability = dist_factor + complexity * noise_val
+                candidate_cells.append((i, j, probability))
+    
+    # Select cells based on probabilities to match target area
+    candidate_cells.sort(key=lambda x: x[2], reverse=True)
+    n_cells_target = int(target_area)
+    
+    n_cells = 0
+    for i, j, _ in candidate_cells[:n_cells_target]:
+        grid[i, j] = seed_id
+        n_cells += 1
     
     return grid, n_cells
 
@@ -1007,9 +1112,12 @@ def simulate_with_competitive_distance(
     if use_spatial_filter and spatial_variance is None:
         spatial_variance = (grid_size / 4.0) ** 2
     
+    seed_configs_id=generate_seed_configs(n=seed_configs['n'],l=seed_configs['l'],r=seed_configs['r'],
+                                          r_lcc=seed_configs['r_lcc'],r_urb=seed_configs['r_urb'],roughness=seed_configs['roughness'])
+
     # Initialize
     grid, boundary_sets, seed_ids, initial_sizes = initialize_roughened_seeds(
-        grid_size, seed_configs
+        grid_size, seed_configs_id
     )
     
     print("\nInitial sizes:")
@@ -1392,6 +1500,8 @@ def run_parallel_ensemble(
     if random_seed_base is None:
         random_seed_base = int(time.time() * 1000) % 1000000
     
+
+
     print("=" * 70)
     print("PARALLEL ENSEMBLE SIMULATION")
     print("=" * 70)

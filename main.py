@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import random
 import math
-
+import pandas as pd
 # Load parameters
 
 
@@ -35,50 +35,7 @@ merge_check_frequency=100
 update_frequency=100000
 
 
-def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
-    """
-    Generate seed configurations for urban simulation.
-    
-    Parameters:
-    - n: number of seeds (excluding the largest component)
-    - l: size of the grid
-    - r: radius around the largest component where seeds should be placed
-    - r_lcc: radius of the largest connected component (LCC)
-    - r_urb: list of radii for the seeds (length should be n)
-    - roughness: global roughness value for all seeds
-    
-    Returns:
-    - List of seed configuration dictionaries
-    """
-    seed_configs = []
-    
-    # Add the largest connected component at the center
-    center = (int(l / 2), int(l / 2))
-    seed_configs.append({
-        'position': center,
-        'radius': r_lcc,
-        'roughness': roughness
-    })
-    
-    # Generate n seeds randomly placed on a circle around the LCC
-    for i in range(n):
-        # Random angle in radians
-        angle = random.uniform(0, 2 * math.pi)
-        
-        # Calculate position on the circle of radius r around the center
-        x =int( center[0] + r * math.cos(angle))
-        y =int( center[1] + r * math.sin(angle))
-        
-        # Get radius from r_urb list
-        radius = r_urb[i]
-        
-        seed_configs.append({
-            'position': (x, y),
-            'radius': radius,
-            'roughness': roughness
-        })
-    
-    return seed_configs
+
 
 
 
@@ -86,7 +43,7 @@ def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
 
 def compute_timesteps(L):
     # 🟢 Replace with your actual expression
-    return int(((L/2)**2-100**2)*np.pi*0.5)
+    return int(((L/2)**2-100**2)*np.pi*0.05)
 
 
 # Output base directory
@@ -118,16 +75,13 @@ def compute_timesteps(L):
 
 radius=200
 
-base_output_dir = f"C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output\\r_study_new\\r_200"
+base_output_dir = "/Users/mika/Documents/outputs_initial_condition/test"
 os.makedirs(base_output_dir, exist_ok=True)
 
 
-seed_configs = generate_seed_configs(n=1, l=size, r=radius, r_lcc=50, r_urb=[5], roughness=0.1)
+seed_configs={'n':1, 'l':size, 'r':radius, 'r_lcc':50, 'r_urb':[5], 'roughness':0.1}
 
 timesteps = compute_timesteps(size)
-
-
-
 
 
         # Name of the output file
