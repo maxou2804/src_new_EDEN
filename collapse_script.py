@@ -11,7 +11,7 @@ from alpha_calculation_functions import read_directory, read_csv_at_time
 
 
 
-directory="C:\\Users\\trique\\Downloads\\EDEN_MAIN\\EDEN_output\\r_study_new\\r_200"
+directory="C:\\Users\\trique\\Downloads\\MASTER_THESIS\\test\\runs_n=1_r=200"
 wt_avg_collection=[]
 l_avg_collection=[]
 urban_avg_collection=[]
@@ -27,7 +27,7 @@ urban_collection=[]
 time_scalar_collection=[]
 total_urb_collection=[]
 
-time_serie= np.linspace(0.2,0.9,30)
+time_serie= np.linspace(0.1,0.9,30)
 
 for time in time_serie:
 

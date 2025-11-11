@@ -78,12 +78,14 @@ def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
     
     # Generate n seeds randomly placed on a circle around the LCC
     for i in range(n):
+        print(i)
         # Random angle in radians
         angle = random.uniform(0, 2 * math.pi)
-        r_rand= r + np.random.normal(loc=0,scale=5)
+
+       
         # Calculate position on the circle of radius r around the center
-        x =int( center[0] + r_rand * math.cos(angle))
-        y =int( center[1] + r_rand * math.sin(angle))
+        x =int( center[0] + (r+np.random.normal(0,20) )* math.cos(angle))
+        y =int( center[1] + (r+np.random.normal(0,20) ) * math.sin(angle))
         
         # Get radius from r_urb list
         radius = r_urb[i]
@@ -93,7 +95,7 @@ def generate_seed_configs(n, l, r, r_lcc, r_urb, roughness):
             'radius': radius,
             'roughness': roughness
         })
-        return seed_configs
+    return seed_configs
 
 def create_roughened_seed(grid, center_i, center_j, radius, roughness=0.3, seed_id=1):
     """
@@ -256,8 +258,9 @@ def initialize_roughened_seeds(grid_size, seed_configs):
         roughness = config.get('roughness', 0.3)
         
         grid, n_cells = create_roughened_seed(
-            grid, position[0], position[1], radius, roughness, seed_id
-        )
+            grid=grid, center_i=position[0], center_j=position[1], radius=radius,
+           seed_id= seed_id)
+        
         
         initial_sizes[seed_id] = n_cells
         seed_ids.append(seed_id)
@@ -1094,7 +1097,7 @@ def simulate_with_competitive_distance(
         print("Mode: Uniform random selection (no competitive distance)")
     print("=" * 70)
     print(f"Grid: {grid_size}×{grid_size}")
-    print(f"Seeds: {len(seed_configs)}")
+    print(f"Seeds: {seed_configs['n']}")
     print(f"Steps: {timesteps:,}")
     if use_spatial_filter:
         if spatial_variance is None:
@@ -1112,13 +1115,18 @@ def simulate_with_competitive_distance(
     if use_spatial_filter and spatial_variance is None:
         spatial_variance = (grid_size / 4.0) ** 2
     
+    
+    
     seed_configs_id=generate_seed_configs(n=seed_configs['n'],l=seed_configs['l'],r=seed_configs['r'],
                                           r_lcc=seed_configs['r_lcc'],r_urb=seed_configs['r_urb'],roughness=seed_configs['roughness'])
-
+    print(seed_configs)
+    print(seed_configs_id)
     # Initialize
     grid, boundary_sets, seed_ids, initial_sizes = initialize_roughened_seeds(
-        grid_size, seed_configs_id
-    )
+        grid_size, seed_configs_id)
+    
+    
+    
     
     print("\nInitial sizes:")
     for sid, size in initial_sizes.items():
