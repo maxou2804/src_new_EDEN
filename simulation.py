@@ -940,15 +940,20 @@ def create_growth_animation(frames, seed_ids, output_file, fps=10, title="Growth
         return
     
     n_seeds = len(seed_ids)
+    max_seed_id = int(np.max(seed_ids))
     
-    # Create colormap
+    # Create colormap - need colors for all seed IDs from 0 to max_seed_id
+    # Background (0) will be white, seeds will get distinct colors
     if n_seeds <= 10:
+        # Use tab10 colormap for up to 10 distinct colors
         colors = ['white'] + list(plt.cm.tab10.colors[:n_seeds])
     else:
+        # Use hsv colormap for more than 10 seeds to generate enough distinct colors
         colors = ['white'] + [plt.cm.hsv(i/n_seeds) for i in range(n_seeds)]
     
     cmap = mcolors.ListedColormap(colors)
-    bounds = np.arange(n_seeds + 2) - 0.5
+    # Create bounds for all possible seed IDs (0 to max_seed_id)
+    bounds = np.arange(len(colors) + 1) - 0.5
     norm = mcolors.BoundaryNorm(bounds, cmap.N)
     
     # Create animation
@@ -1012,6 +1017,109 @@ def eden_growth_step_pure(grid, boundary_set, seed_id):
     
     return grid, boundary_set
 
+def load_grid_from_csv(csv_file):
+    """
+    Load grid from CSV file.
+    
+    Parameters:
+    -----------
+    csv_file : str
+        Path to CSV file containing grid data
+    
+    Returns:
+    --------
+    grid : np.ndarray
+        Loaded grid (int32)
+    """
+    grid = np.loadtxt(csv_file, delimiter=',', dtype=np.int32)
+    print(f"✓ Grid loaded from: {csv_file}")
+    print(f"  Shape: {grid.shape}")
+    print(f"  Unique seeds: {np.unique(grid[grid > 0])}")
+    return grid
+
+def load_grid_from_npy(npy_file):
+    """
+    Load grid from .npy file.
+    
+    Parameters:
+    -----------
+    npy_file : str
+        Path to .npy file containing grid data
+    
+    Returns:
+    --------
+    grid : np.ndarray
+        Loaded grid
+    """
+    grid = np.load(npy_file)
+    print(f"✓ Grid loaded from: {npy_file}")
+    print(f"  Shape: {grid.shape}")
+    print(f"  Unique seeds: {np.unique(grid[grid > 0])}")
+    return grid
+
+
+
+def load_grid_auto(file_path):
+    """
+    Automatically load grid based on file extension.
+    
+    Parameters:
+    -----------
+    file_path : str or Path
+        Path to grid file (.csv or .npy)
+    
+    Returns:
+    --------
+    grid : np.ndarray
+        Loaded grid
+    """
+    file_path = Path(file_path)
+    
+    if file_path.suffix == '.npy':
+        return load_grid_from_npy(file_path)
+    elif file_path.suffix == '.csv':
+        return load_grid_from_csv(file_path)
+    else:
+        raise ValueError(f"Unsupported file format: {file_path.suffix}. Use .npy or .csv")
+def initialize_boundary_sets_from_grid(grid):
+    """
+    Initialize boundary sets from an existing grid.
+    
+    Parameters:
+    -----------
+    grid : np.ndarray
+        Grid with seeds already placed
+    
+    Returns:
+    --------
+    boundary_sets : list of sets
+        Boundary sets for each seed
+    seed_ids : np.ndarray
+        Array of seed IDs
+    initial_sizes : dict
+        Initial size of each seed
+    """
+    grid_size = grid.shape[0]
+    seed_ids = np.unique(grid[grid > 0])
+    boundary_sets = []
+    initial_sizes = {}
+    
+    for seed_id in seed_ids:
+        initial_sizes[seed_id] = np.sum(grid == seed_id)
+        
+        # Find boundary cells for this seed
+        boundary = set()
+        for i in range(grid_size):
+            for j in range(grid_size):
+                if grid[i, j] == seed_id:
+                    neighbors = get_neighbors(i, j, grid_size, grid_size)
+                    for ni, nj in neighbors:
+                        if grid[ni, nj] == 0 and (ni, nj) not in boundary:
+                            boundary.add((ni, nj))
+        
+        boundary_sets.append(boundary)
+    
+    return boundary_sets, seed_ids, initial_sizes
 
 # ============================================================================
 # MAIN SIMULATION (MODIFIED)
@@ -1030,52 +1138,22 @@ def simulate_with_competitive_distance(
     N_sampling=10000,
     num_N=20,
     create_animation=False,
-    animation_interval=100,
+    animation_interval=1000,
     animation_file=None,
     use_spatial_filter=False,
     spatial_variance=None,
-    use_competitive_distance=True  # NEW PARAMETER
+    use_competitive_distance=False,
+    initial_grid_file=None  # NEW PARAMETER
 ):
     """
     Multi-seed simulation with optional competitive distance probability.
     
     Parameters:
     -----------
-    grid_size : int
-        Grid size
-    seed_configs : list of dict
-        Seed configurations, each with 'position', 'radius', 'roughness'
-    timesteps : int
-        Total growth steps
-    output_file : str
-        Output CSV file path
-    metric_timestep : int
-        Measurement frequency
-    beta : float
-        Distance exponent (0-2) - only used if use_competitive_distance=True
-    gamma : float
-        Probability exponent - only used if use_competitive_distance=True
-    update_frequency : int
-        Update probability calculator every N iterations - only used if use_competitive_distance=True
-    merge_check_frequency : int
-        Check for merges every N iterations
-    N_sampling : int
-        Number of angles for radial profile
-    num_N : int
-        Number of N values for width analysis
-    create_animation : bool
-        If True, create animated GIF
-    animation_interval : int
-        Capture frame every N steps
-    animation_file : str, optional
-        Output GIF filename
-    use_spatial_filter : bool
-        If True, apply 2D Gaussian spatial filter centered on grid
-    spatial_variance : float, optional
-        Variance (σ²) for Gaussian spatial filter
-    use_competitive_distance : bool
-        If True, use competitive distance model (KD-tree, beta, gamma)
-        If False, use pure Eden growth (uniform random, much faster)
+    ... (all previous parameters)
+    initial_grid_file : str or Path, optional
+        Path to initial grid file (.csv or .npy) to continue from.
+        If provided, the grid is loaded and seed_configs is ignored.
     
     Returns:
     --------
@@ -1097,7 +1175,46 @@ def simulate_with_competitive_distance(
         print("Mode: Uniform random selection (no competitive distance)")
     print("=" * 70)
     print(f"Grid: {grid_size}×{grid_size}")
-    print(f"Seeds: {seed_configs['n']}")
+    
+    # Initialize grid
+    if initial_grid_file is not None:
+        # Load from file
+        print(f"\n🔄 Loading initial grid from: {initial_grid_file}")
+        grid = load_grid_auto(initial_grid_file)
+        
+        # Verify grid size
+        if grid.shape[0] != grid_size or grid.shape[1] != grid_size:
+            print(f"⚠ Warning: Loaded grid size {grid.shape} doesn't match requested {grid_size}×{grid_size}")
+            print(f"  Using loaded grid size: {grid.shape[0]}×{grid.shape[1]}")
+            grid_size = grid.shape[0]
+        
+        # Initialize from loaded grid
+        boundary_sets, seed_ids, initial_sizes = initialize_boundary_sets_from_grid(grid)
+        
+        print(f"\nLoaded seeds: {len(seed_ids)}")
+        for sid, size in initial_sizes.items():
+            print(f"  Seed {sid}: {size} cells")
+    else:
+        # Initialize from seed configs
+        print(f"Seeds: {seed_configs['n']}")
+        
+        seed_configs_id = generate_seed_configs(
+            n=seed_configs['n'],
+            l=seed_configs['l'],
+            r=seed_configs['r'],
+            r_lcc=seed_configs['r_lcc'],
+            r_urb=seed_configs['r_urb'],
+            roughness=seed_configs['roughness']
+        )
+        
+        grid, boundary_sets, seed_ids, initial_sizes = initialize_roughened_seeds(
+            grid_size, seed_configs_id
+        )
+        
+        print("\nInitial sizes:")
+        for sid, size in initial_sizes.items():
+            print(f"  Seed {sid}: {size} cells")
+    
     print(f"Steps: {timesteps:,}")
     if use_spatial_filter:
         if spatial_variance is None:
@@ -1114,23 +1231,6 @@ def simulate_with_competitive_distance(
     # Set default spatial variance if needed
     if use_spatial_filter and spatial_variance is None:
         spatial_variance = (grid_size / 4.0) ** 2
-    
-    
-    
-    seed_configs_id=generate_seed_configs(n=seed_configs['n'],l=seed_configs['l'],r=seed_configs['r'],
-                                          r_lcc=seed_configs['r_lcc'],r_urb=seed_configs['r_urb'],roughness=seed_configs['roughness'])
-    print(seed_configs)
-    print(seed_configs_id)
-    # Initialize
-    grid, boundary_sets, seed_ids, initial_sizes = initialize_roughened_seeds(
-        grid_size, seed_configs_id)
-    
-    
-    
-    
-    print("\nInitial sizes:")
-    for sid, size in initial_sizes.items():
-        print(f"  Seed {sid}: {size} cells")
     
     # Initialize probability calculator ONLY if using competitive distance
     prob_params_list = None
@@ -1209,21 +1309,14 @@ def simulate_with_competitive_distance(
                     use_spatial_filter, center_i, center_j, spatial_variance
                 )
             else:
-                # Pure Eden growth (much simpler and faster)
+                # Pure Eden growth
                 grid, boundary_sets[seed_idx] = eden_growth_step_pure(
                     grid, boundary_sets[seed_idx], seed_id
                 )
-                
-                # Apply spatial filter if enabled (even in pure mode)
-                if use_spatial_filter:
-                    # Get the cell that was just added
-                    # Note: In pure mode, we'd need to refactor to apply filter before adding
-                    # For now, spatial filter is most useful with competitive mode
-                    pass
             
-            t += 1
-            if t >= timesteps:
-                break
+        t += 1
+        if t >= timesteps:
+            break
         
         iteration += 1
         
@@ -1325,9 +1418,6 @@ def simulate_with_competitive_distance(
     print("=" * 70)
     
     return grid, largest_seed_stats, all_stats
-
-
-
 
 
 
@@ -1702,5 +1792,3 @@ def save_aggregate_results(results, aggregate_stats, output_path):
             ])
     
     print(f"✓ Detailed results saved to: {results_file}")
-
-

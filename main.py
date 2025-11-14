@@ -98,27 +98,27 @@ for r in r_col:
                 base_output_dir, f"simul.csv")
 
 
-    #         #Run simulation
-    # grid, largest_seed_stats, all_stats= simulate_with_competitive_distance (grid_size=size,
-    #                                     seed_configs=seed_configs,
-    #                                     timesteps=timesteps,
-    #                                     output_file=output_file,
-    #                                     beta=beta,
-    #                                     gamma=gamma,
-    #                                     metric_timestep=metric_rate,
-    #                                     N_sampling=10000,
-    #                                     num_N=30,
-    #                                     update_frequency=update_frequency,
-    #                                     merge_check_frequency=merge_check_frequency,
-    #                                     create_animation=True,  # NEW: Enable/disable animation
-    #                                     animation_interval=5000,  # NEW: Capture frame every N steps
-    #                                     use_spatial_filter=False,
-    #                                     spatial_variance=spatial_variance,
-    #                                     animation_file=base_output_dir + f"\\animation.gif",
-    #                                     use_competitive_distance=False ) # NEW: Animation output file)
+            #Run simulation
+    grid, largest_seed_stats, all_stats= simulate_with_competitive_distance (grid_size=size,
+                                        seed_configs=seed_configs,
+                                        timesteps=timesteps,
+                                        output_file=output_file,
+                                        beta=beta,
+                                        gamma=gamma,
+                                        metric_timestep=metric_rate,
+                                        N_sampling=10000,
+                                        num_N=30,
+                                        update_frequency=update_frequency,
+                                        merge_check_frequency=merge_check_frequency,
+                                        create_animation=True,  # NEW: Enable/disable animation
+                                        animation_interval=5000,  # NEW: Capture frame every N steps
+                                        use_spatial_filter=False,
+                                        spatial_variance=spatial_variance,
+                                        animation_file=base_output_dir + f"\\animation.gif",
+                                        use_competitive_distance=False ) # NEW: Animation output file)
 
             
-    # print(f"    📝 Results saved to {output_file}" )
+    print(f"    📝 Results saved to {output_file}" )
 
 
 

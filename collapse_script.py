@@ -11,7 +11,7 @@ from alpha_calculation_functions import read_directory, read_csv_at_time
 
 
 
-directory="/Users/mika/Documents/EDEN_inital_conditons/initial_conditions_run/runs_no_clusters_r=3"
+directory="/Users/mika/Documents/EDEN_inital_conditons/real_initial_conditions/real_initial_conditions_Bangkok_n_clusters=30"
 wt_avg_collection=[]
 l_avg_collection=[]
 urban_avg_collection=[]
@@ -27,7 +27,7 @@ urban_collection=[]
 time_scalar_collection=[]
 total_urb_collection=[]
 
-time_serie= np.linspace(0.1,0.9,50  )
+time_serie= np.linspace(0.1,0.9,30)
 
 for time in time_serie:
 
@@ -99,7 +99,7 @@ plt.show()
 
 
 
-beta_vals = np.linspace(0.0, 1, 50)   # adjust
+beta_vals = np.linspace(-1, 1, 50)   # adjust
 inv_z_vals = np.linspace(0, 1, 50)
 E = grid_error_map(l_avg_collection, wt_avg_collection, time_avg_collection, beta_vals, inv_z_vals, n_interp=200)
 
@@ -118,7 +118,7 @@ plt.show()
 
 res = minimize_collapse_normalized(l_avg_collection, wt_avg_collection, time_avg_collection,
                                    beta_guess=beta_vals[min_idx[0]], inv_z_guess=beta_vals[min_idx[1]],
-                                   bounds=((0.0,2),(0.01,2)),
+                                   bounds=((-1,2),(0.01,2)),
                                    n_interp=200)
 print(res)
 

@@ -18,13 +18,13 @@ l_collection=[]
 # directory="/Users/mika/Documents/PDM/outputs/13_10_25"
 
 #directory = "C:\\Users\\trique\\Downloads\\MASTER_THESIS\\outputs\\run_multiple_seed_gravitational"
-directory="/Users/mika/Documents/EDEN_inital_conditons/initial_conditions_run/runs_no_clusters_r=3"
+directory="/Users/mika/Documents/EDEN_inital_conditons/real_initial_conditions/real_initial_conditions_Bangkok_n_clusters=10"
 #time at which we do the alpha calculation (give 0 to 1)
 time_extract=0.9
 
 #give points to skip for the fit
 beg_points_to_skip=0
-end_points_to_skip=24
+end_points_to_skip=10
 
 #extract values from cvs
 
