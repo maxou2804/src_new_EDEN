@@ -1451,7 +1451,8 @@ def run_single_realization(
     spatial_variance,
     save_individual_outputs,
     save_individual_grids,
-    random_seed_offset
+    random_seed_offset,
+    initial_grid_file  # NEW PARAMETER
 ):
     """
     Run a single realization of the simulation.
@@ -1486,7 +1487,8 @@ def run_single_realization(
         create_animation=False,  # Don't create animations in parallel runs
         use_competitive_distance=use_competitive_distance,
         use_spatial_filter=use_spatial_filter,
-        spatial_variance=spatial_variance
+        spatial_variance=spatial_variance,
+        initial_grid_file=initial_grid_file  # PASS THROUGH
     )
     
     elapsed_time = time.time() - start_time
@@ -1532,7 +1534,8 @@ def run_parallel_ensemble(
     spatial_variance=None,
     save_individual_outputs=True,
     save_individual_grids=False,
-    random_seed_base=None
+    random_seed_base=None,
+    initial_grid_file=None  # NEW PARAMETER
 ):
     """
     Run multiple independent realizations of the simulation in parallel.
@@ -1542,9 +1545,10 @@ def run_parallel_ensemble(
     n_realizations : int
         Number of independent simulations to run
     grid_size : int
-        Grid size for each simulation
-    seed_configs : list of dict
-        Seed configurations (same for all realizations)
+        Grid size for each simulation (ignored if initial_grid_file is provided)
+    seed_configs : list of dict or dict
+        Seed configurations. If initial_grid_file is provided, this is only used
+        for determining n_seeds in the summary statistics
     timesteps : int
         Number of growth steps per simulation
     output_dir : str
@@ -1577,6 +1581,9 @@ def run_parallel_ensemble(
         If True, save final grid as .npy for each realization
     random_seed_base : int, optional
         Base random seed (default: current time)
+    initial_grid_file : str or Path, optional
+        Path to initial grid file (.csv or .npy) to continue from.
+        If provided, all realizations will start from this same initial state.
     
     Returns:
     --------
@@ -1598,7 +1605,21 @@ def run_parallel_ensemble(
     if random_seed_base is None:
         random_seed_base = int(time.time() * 1000) % 1000000
     
-
+    # Determine number of seeds for reporting
+    if initial_grid_file is not None:
+        # Load grid to get seed count
+        temp_grid = load_grid_auto(initial_grid_file)
+        n_seeds = len(np.unique(temp_grid[temp_grid > 0]))
+        grid_size = temp_grid.shape[0]  # Update grid_size from loaded grid
+        print(f"Loading initial grid from: {initial_grid_file}")
+        print(f"  Grid size: {grid_size}×{grid_size}")
+        print(f"  Seeds found: {n_seeds}")
+    else:
+        # Handle both dict and list formats for seed_configs
+        if isinstance(seed_configs, dict):
+            n_seeds = seed_configs.get('n', len(seed_configs))
+        else:
+            n_seeds = len(seed_configs)
 
     print("=" * 70)
     print("PARALLEL ENSEMBLE SIMULATION")
@@ -1606,8 +1627,10 @@ def run_parallel_ensemble(
     print(f"Realizations: {n_realizations}")
     print(f"Workers: {n_workers}")
     print(f"Grid: {grid_size}×{grid_size}")
-    print(f"Seeds: {len(seed_configs)}")
+    print(f"Seeds: {n_seeds}")
     print(f"Steps per realization: {timesteps:,}")
+    if initial_grid_file:
+        print(f"Starting from: {initial_grid_file}")
     if use_competitive_distance:
         print(f"Mode: Competitive Distance (β={beta}, γ={gamma})")
     else:
@@ -1637,7 +1660,8 @@ def run_parallel_ensemble(
         spatial_variance=spatial_variance,
         save_individual_outputs=save_individual_outputs,
         save_individual_grids=save_individual_grids,
-        random_seed_offset=random_seed_base
+        random_seed_offset=random_seed_base,
+        initial_grid_file=initial_grid_file  # PASS THROUGH
     )
     
     # Run simulations in parallel
@@ -1653,7 +1677,8 @@ def run_parallel_ensemble(
     print("AGGREGATING RESULTS")
     print("=" * 70)
     
-    aggregate_stats = aggregate_ensemble_results(results, seed_configs)
+    # Update aggregate function call to handle initial grid case
+    aggregate_stats = aggregate_ensemble_results(results, n_seeds)
     
     # Save aggregate results
     save_aggregate_results(results, aggregate_stats, output_path)
@@ -1665,9 +1690,16 @@ def run_parallel_ensemble(
     return results, aggregate_stats
 
 
-def aggregate_ensemble_results(results, seed_configs):
+def aggregate_ensemble_results(results, n_seeds_or_configs):
     """
     Aggregate statistics across all realizations.
+    
+    Parameters:
+    -----------
+    results : list of dict
+        Results from all realizations
+    n_seeds_or_configs : int or list/dict
+        Either the number of seeds (int) or seed_configs (for backward compatibility)
     
     Returns:
     --------
@@ -1675,7 +1707,14 @@ def aggregate_ensemble_results(results, seed_configs):
         Contains mean, std, min, max for various metrics
     """
     n_realizations = len(results)
-    n_seeds = len(seed_configs)
+    
+    # Handle both formats
+    if isinstance(n_seeds_or_configs, int):
+        n_seeds = n_seeds_or_configs
+    elif isinstance(n_seeds_or_configs, dict):
+        n_seeds = n_seeds_or_configs.get('n', len(n_seeds_or_configs))
+    else:
+        n_seeds = len(n_seeds_or_configs)
     
     # Extract metrics
     largest_cells = np.array([r['largest_seed_cells'] for r in results])
@@ -1683,8 +1722,13 @@ def aggregate_ensemble_results(results, seed_configs):
     n_surviving = np.array([r['n_surviving_seeds'] for r in results])
     times = np.array([r['elapsed_time'] for r in results])
     
-    # Count wins per seed
-    seed_wins = {i+1: 0 for i in range(n_seeds)}
+    # Count wins per seed - get actual seed IDs from results
+    all_seed_ids = set()
+    for r in results:
+        if r['all_stats']:
+            all_seed_ids.update(r['all_stats'].keys())
+    
+    seed_wins = {sid: 0 for sid in all_seed_ids}
     for r in results:
         if r['largest_seed_id'] is not None:
             seed_wins[r['largest_seed_id']] += 1
@@ -1732,7 +1776,8 @@ def aggregate_ensemble_results(results, seed_configs):
     
     print("\nWin rates per seed:")
     for seed_id, win_rate in sorted(aggregate_stats['seed_win_rates'].items()):
-        print(f"  Seed {seed_id}: {win_rate*100:.1f}% ({seed_wins[seed_id]}/{n_realizations} wins)")
+        wins = seed_wins[seed_id]
+        print(f"  Seed {seed_id}: {win_rate*100:.1f}% ({wins}/{n_realizations} wins)")
     
     return aggregate_stats
 
